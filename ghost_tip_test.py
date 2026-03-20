@@ -10,7 +10,7 @@ from py_ecc.bn128 import (
 load_dotenv()
 
 # ==============================================================================
-# CRYPTOGRAPHIC HELPER: HASH-TO-CURVE (BN254 / alt_bn128)
+# CRYPTOGRAPHIC HELPERS & FORMATTING
 # ==============================================================================
 def hash_to_curve(message_bytes: bytes) -> tuple:
     """
@@ -30,11 +30,28 @@ def hash_to_curve(message_bytes: bytes) -> tuple:
         if pow(y_squared, (field_modulus - 1) // 2, field_modulus) == 1:
             # BN254 field_modulus = 3 mod 4, so y = sqrt(v) = v^((p+1)/4) mod p
             y = pow(y_squared, (field_modulus + 1) // 4, field_modulus)
-            
-            # Return the point as py_ecc FQ objects
             return (FQ(x), FQ(y))
         
         counter += 1
+
+def print_g1(name: str, point: tuple):
+    """Helper to print G1 points in hex for cross-language comparison."""
+    # Convert scalar to hex, strip '0x' prefix
+    x_hex = hex(point[0].n)[2:]
+    y_hex = hex(point[1].n)[2:]
+    print(f"    {name} (X) : {x_hex}")
+    print(f"    {name} (Y) : {y_hex}")
+
+def print_g2(name: str, point: tuple):
+    """Helper to print G2 points in hex for cross-language comparison."""
+    x_real = hex(point[0].coeffs[0].n)[2:]
+    x_imag = hex(point[0].coeffs[1].n)[2:]
+    y_real = hex(point[1].coeffs[0].n)[2:]
+    y_imag = hex(point[1].coeffs[1].n)[2:]
+    print(f"    {name} (X_real) : {x_real}")
+    print(f"    {name} (X_imag) : {x_imag}")
+    print(f"    {name} (Y_real) : {y_real}")
+    print(f"    {name} (Y_imag) : {y_imag}")
 
 # ==============================================================================
 # MAIN LIFECYCLE TEST
@@ -52,7 +69,9 @@ def main():
     
     sk_mint = int(sk_mint_str)
     PK_mint = multiply(G2, sk_mint)
-    print("    ✅ Mint Keys loaded securely.\n")
+    print("    ✅ Mint Keys loaded securely.")
+    print_g2("PK_mint", PK_mint)
+    print("")
 
     # --------------------------------------------------------------------------
     # 1. DETERMINISTIC DERIVATION (Client Side)
@@ -77,37 +96,37 @@ def main():
     r = int.from_bytes(keccak(b"blind" + base_material), 'big') % curve_order
 
     print(f"    Token Index   : {token_index}")
-    print(f"    Spend Address : {spend_address_hex} (This is the Token Secret/Nullifier!)")
+    print(f"    Spend Address : {spend_address_hex} (This is the Token Secret!)")
     print(f"    Blinding 'r'  : {r}\n")
 
     # --------------------------------------------------------------------------
     # 2. BLINDING & DEPOSIT (Client Side -> Smart Contract)
     # --------------------------------------------------------------------------
     print("[2] Client Blinding the Token...")
-    # Map the Ethereum Address to a point on the BN254 curve
     Y = hash_to_curve(spend_address_bytes)
-    
-    # Multiplicative blinding: B = r * Y
     B = multiply(Y, r)
+    
+    print_g1("Y (Hash-to-Curve)", Y)
+    print_g1("B (Blinded Point)", B)
     print("    Blinded Point B mapped to G1. Sent to Smart Contract.\n")
 
     # --------------------------------------------------------------------------
     # 3. BLIND SIGNING (Mint Server)
     # --------------------------------------------------------------------------
     print("[3] Mint blindly signing the point...")
-    # The mint multiplies the blinded point by its secret key: S' = sk * B
     S_prime = multiply(B, sk_mint)
+    
+    print_g1("S' (Blind Sig)", S_prime)
     print("    Blinded Signature S' generated. Broadcasted to Chain.\n")
 
     # --------------------------------------------------------------------------
     # 4. UNBLINDING (Client Side)
     # --------------------------------------------------------------------------
     print("[4] Client unblinding the signature...")
-    # The client computes the modular inverse of r
     r_inv = pow(r, -1, curve_order)
-    
-    # S = S' * r^-1
     S = multiply(S_prime, r_inv)
+    
+    print_g1("S (Unblinded Sig)", S)
     print("    Valid, unblinded eCash Token obtained: (SpendAddress, S)\n")
 
     # --------------------------------------------------------------------------
@@ -116,32 +135,37 @@ def main():
     print("[5] Generating Redemption Proof for Smart Contract...")
     destination_address = "0x89205A3A3b2A69De6Dbf7f01ED13B2108B2c43e7"
     
-    # Create the anti-MEV payload
     payload_str = f"Pay to: {destination_address}"
     msg_hash = keccak(payload_str.encode('utf-8'))
     
     # Sign it with the Spend Private Key
     ecdsa_sig = spend_priv.sign_msg_hash(msg_hash)
+    
+    # Manually extract r and s and pad to 64 chars to match TypeScript compactHex
+    r_hex = hex(ecdsa_sig.r)[2:].zfill(64)
+    s_hex = hex(ecdsa_sig.s)[2:].zfill(64)
+    compact_hex = r_hex + s_hex
+    recovery_bit = ecdsa_sig.v
+    
     print(f"    Destination      : {destination_address}")
-    print(f"    ECDSA Signature  : {ecdsa_sig.to_hex()}\n")
+    print(f"    ECDSA Signature  : 0x{compact_hex} (plus recovery bit: {recovery_bit})\n")
 
     # --------------------------------------------------------------------------
     # 6. SMART CONTRACT VERIFICATION (EVM Simulation)
     # --------------------------------------------------------------------------
     print("[6] EVM Verification (Redemption Transaction)...")
     
-    # A. ecrecover the nullifier from the ECDSA signature
     recovered_pubkey = ecdsa_sig.recover_public_key_from_msg_hash(msg_hash)
     recovered_address = recovered_pubkey.to_address()
-    print(f"    [Contract] ecrecover Address : {recovered_address}")
-    assert recovered_address.lower() == spend_address_hex.lower(), "ECDSA ecrecover failed!"
+    
+    print(f"    [Contract] Signature mathematically bound to: {recovered_address}")
+    assert recovered_address.lower() == spend_address_hex.lower(), "ECDSA Verification failed!"
     print("    ✅ MEV Protection Verified!")
 
-    # B. Hash the recovered address back to the curve
     Y_recovered = hash_to_curve(bytes.fromhex(recovered_address[2:]))
 
-    # C. Execute the BLS Pairing Check: e(S, G2) == e(Y, PK_mint)
-    # Note: py_ecc pairing takes (G2, G1)
+    # Execute the BLS Pairing Check: e(S, G2) == e(Y, PK_mint)
+    # py_ecc pairing takes (G2, G1)
     left_side = pairing(G2, S)
     right_side = pairing(PK_mint, Y_recovered)
     
