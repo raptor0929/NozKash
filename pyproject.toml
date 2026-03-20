@@ -10,4 +10,5 @@ dependencies = [
     "eth-utils>=5.3.1",
     "py-ecc>=8.0.0",
     "pycryptodome>=3.23.0",
+    "python-dotenv>=1.2.2",
 ]
