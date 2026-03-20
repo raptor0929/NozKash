@@ -79,9 +79,8 @@ export function multiplyBN254(point: mcl.G1, scalar: bigint): mcl.G1 {
  * Verifies e(S, G2) == e(Y, PK_mint)
  */
 export function verifyPairingBN254(S: mcl.G1, Y: mcl.G1, PK_mint: mcl.G2): boolean {
-    const generatorG2 = new mcl.G2();
-    // Standard generator for BN254 G2 (alt_bn128)
-    generatorG2.setStr("1 1800deef121f1e76b4edb22031d2e05f00ce18a221f7ee33989cce7fa15f8a00 198e9393920d483a7260bfb731fb5d25f1aa493335a9e71297e485b7aef312c2 12c85ea5db8c6def483af156cb8cb8ce8ff948d11d4e0e5a9101ed8fb8a614bb 2b14be26bd96b40285a210515e012e2c88f121eb3e0b74100fc77d079422a578", 16);
+    // Generate the exact same mathematically valid G2 point we used in the Mint
+    const generatorG2 = mcl.hashAndMapToG2("GhostTipG2Generator");
 
     // Calculate pairings
     const e1 = mcl.pairing(S, generatorG2);
