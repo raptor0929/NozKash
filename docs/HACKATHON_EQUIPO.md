@@ -7,7 +7,7 @@ Tu repo local ya está en la rama **`main`** con un commit inicial. Falta crear 
 ### Opción A — desde la web (simple)
 
 1. Entrá a **[github.com/new](https://github.com/new)**.
-2. **Repository name:** por ejemplo `ghost-tip-wallet` (o el nombre que quieran para el hackathon).
+2. **Repository name:** por ejemplo **`aleph-hackathon-m2026`** (repo del equipo en GitHub).
 3. **Público** suele ser lo habitual en hackathons (o privado si el evento lo pide).
 4. **No marques** “Add a README” ni .gitignore (el proyecto ya los tiene).
 5. Crear repositorio.
@@ -19,25 +19,34 @@ En tu Mac (con `gh auth login` ya hecho):
 ```bash
 gh config set git_protocol ssh
 cd /Users/Personal/ghost-tip-wallet
-gh repo create ghost-tip-wallet --public --source=. --remote=origin --push
+gh repo create aleph-hackathon-m2026 --public --source=. --remote=origin --push
 ```
 
 Cambiá `--public` por `--private` si lo necesitás. Si el repo **ya existe** en la web, solo añadí el remoto (paso 2) y hacé `git push`.
 
 ## 2. Enlazar `origin` y subir (SSH)
 
-Sustituí **`Simonethg`** y **`ghost-tip-wallet`** por tu usuario de GitHub y el nombre del repo.
+Repo del equipo: **`Simonethg/aleph-hackathon-m2026`**.
+
+**HTTPS:**
 
 ```bash
 cd /Users/Personal/ghost-tip-wallet
-git remote add origin git@github.com:Simonethg/ghost-tip-wallet.git
+git remote add origin https://github.com/Simonethg/aleph-hackathon-m2026.git
 git push -u origin main
 ```
 
-Si `git remote add` dice que `origin` ya existe:
+Si `origin` ya existe:
 
 ```bash
-git remote set-url origin git@github.com:Simonethg/ghost-tip-wallet.git
+git remote set-url origin https://github.com/Simonethg/aleph-hackathon-m2026.git
+git push -u origin main
+```
+
+**SSH (si preferís):**
+
+```bash
+git remote set-url origin git@github.com:Simonethg/aleph-hackathon-m2026.git
 git push -u origin main
 ```
 
@@ -46,18 +55,26 @@ git push -u origin main
 En GitHub: repo → **Settings** → **Collaborators** (o **Manage access**) → **Add people**.
 
 Les mandás el enlace del repo:  
-`https://github.com/Simonethg/ghost-tip-wallet`
+`https://github.com/Simonethg/aleph-hackathon-m2026`
 
 ## 4. Qué hacen tus compañeros la primera vez
 
 ```bash
-git clone git@github.com:Simonethg/ghost-tip-wallet.git
-cd ghost-tip-wallet
+git clone https://github.com/Simonethg/aleph-hackathon-m2026.git
+cd aleph-hackathon-m2026
 npm install
 npm run dev
 ```
 
-(Si clonan por HTTPS: `https://github.com/Simonethg/ghost-tip-wallet.git`.)
+o por SSH:
+
+```bash
+git clone git@github.com:Simonethg/aleph-hackathon-m2026.git
+cd aleph-hackathon-m2026
+npm install
+npm run dev
+```
+
 
 ## 5. Flujo mínimo para no pisarse
 
