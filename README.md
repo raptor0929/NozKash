@@ -7,13 +7,16 @@ npm install
 npm run dev
 ```
 
-## GitHub
+## GitHub / hackathon
 
-Identidad Git configurada para tus commits:
+Identidad sugerida para los commits:
 
 - **Nombre:** Simonethg  
 - **Email:** simonethfernandez@gmail.com  
 
-Pasos completos (login, `gh`, `remote`, `push`): **[docs/GITHUB_SETUP.md](docs/GITHUB_SETUP.md)**.
+**Subir el proyecto e integrar al equipo (SSH, invitar compañeros, clone, `npm install`):**  
+→ **[docs/HACKATHON_EQUIPO.md](docs/HACKATHON_EQUIPO.md)**
 
-> Ejecutá los comandos de Git en la **Terminal de macOS** (fuera de Cursor) si el IDE bloquea la carpeta `.git`.
+Configuración general y alternativa HTTPS: **[docs/GITHUB_SETUP.md](docs/GITHUB_SETUP.md)**
+
+> Los comandos `git remote` / `git push` conviene ejecutarlos en la **Terminal de macOS** con tu usuario ya logueado en GitHub (SSH o `gh`).
