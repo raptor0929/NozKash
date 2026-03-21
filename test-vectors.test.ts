@@ -10,17 +10,13 @@ const vectors = JSON.parse(readFileSync('./vectors.json', 'utf-8'));
 describe('👻 Ghost-Tip Cryptographic Vectors (TypeScript)', () => {
 
     beforeAll(async () => {
-        // We MUST initialize the mcl-wasm memory allocation before running any crypto
         await initBN254();
     });
 
     it('should derive the exact token secrets deterministically', () => {
-        // Note: The python script encodes the hex string itself to bytes via utf-8
         const masterSeedBytes = Buffer.from(vectors.MASTER_SEED, 'utf-8');
-        
         const secrets = gl.deriveTokenSecrets(masterSeedBytes, vectors.TOKEN_INDEX);
 
-        // Address and Blinding Factor must perfectly match
         expect(secrets.spendAddressHex.toLowerCase()).toBe(vectors.SPEND_ADDRESS.toLowerCase());
         expect(secrets.r.toString()).toBe(vectors.BLINDING_R);
     });
@@ -31,7 +27,6 @@ describe('👻 Ghost-Tip Cryptographic Vectors (TypeScript)', () => {
 
         const { Y, B } = gl.blindToken(secrets.spendAddressBytes, secrets.r);
 
-        // mcl prints G1 coordinates as "1 X Y" in base 16
         const yCoords = Y.getStr(16).split(' ');
         expect(yCoords[1]).toBe(vectors.Y_HASH_TO_CURVE.X);
         expect(yCoords[2]).toBe(vectors.Y_HASH_TO_CURVE.Y);
@@ -72,16 +67,12 @@ describe('👻 Ghost-Tip Cryptographic Vectors (TypeScript)', () => {
         const masterSeedBytes = Buffer.from(vectors.MASTER_SEED, 'utf-8');
         const secrets = gl.deriveTokenSecrets(masterSeedBytes, vectors.TOKEN_INDEX);
         
-        // Add the await keyword here
+        // Generate the strict standard proof
         const proof = await gl.generateRedemptionProof(secrets.spendPriv, "0x89205A3A3b2A69De6Dbf7f01ED13B2108B2c43e7");
         
-        const isValid = gl.verifyEcdsaMevProtection(
-            proof.msgHash, 
-            proof.signatureObj, 
-            vectors.SPEND_ADDRESS
-        );
+        // Pass the full proof object and the expected address
+        const isValid = gl.verifyEcdsaMevProtection(proof, vectors.SPEND_ADDRESS);
         
         expect(isValid).toBe(true);
     });
-
 });
