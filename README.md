@@ -1,4 +1,8 @@
-# ghost-tip-wallet (eGhostCash UI)
+# aleph-hackathon-m2026
+
+Proyecto hackathon — wallet UI **eGhostCash** (código en este repo: `ghost-tip-wallet`).
+
+**Repositorio:** [github.com/Simonethg/aleph-hackathon-m2026](https://github.com/Simonethg/aleph-hackathon-m2026)
 
 **Versión actual:** 1.0.0 (`v1.0`) — ver `CHANGELOG.md` y `VERSION`.
 
