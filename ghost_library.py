@@ -1,63 +1,80 @@
 import os
 from dataclasses import dataclass
+from typing import NewType
 from eth_keys import keys
 from eth_utils import keccak
 from py_ecc.bn128 import (
-    G1, G2, multiply, curve_order, field_modulus, pairing, is_on_curve, FQ, b, b2
+    G1, G2, multiply, curve_order, field_modulus, pairing, is_on_curve, FQ, FQ2, b, b2
 )
 
 # ==============================================================================
 # TYPE ALIASES
-# Gives semantic meaning to raw tuples from py_ecc.
-# G1Point = (FQ, FQ)        — a point on the BN254 G1 curve
-# G2Point = (FQ2, FQ2)      — a point on the BN254 G2 curve
+#
+# py_ecc represents curve points as plain tuples of field elements:
+#   G1Point — a point on BN254 G1: (FQ,  FQ)
+#   G2Point — a point on BN254 G2: (FQ2, FQ2)
+#
+# NewType makes these structurally identical to tuple at runtime (zero cost)
+# but distinct at the type-checker level, so passing a G2Point where a G1Point
+# is expected is a static error rather than a silent wrong-curve multiply.
+#
+# Scalar — a field element in Z_q (0 < s < curve_order). Distinguishes BN254
+# scalars from plain ints used for e.g. token indices or byte lengths.
 # ==============================================================================
 
-G1Point = tuple
-G2Point = tuple
+G1Point = NewType("G1Point", tuple[FQ,  FQ])
+G2Point = NewType("G2Point", tuple[FQ2, FQ2])
+Scalar  = NewType("Scalar",  int)
+
+
+def _mul_g1(point: G1Point, scalar: Scalar) -> G1Point:
+    """multiply() for G1 — asserts the result is non-None (point at infinity is
+    impossible for valid inputs, but py_ecc types it as Optional)."""
+    result = multiply(point, scalar)
+    assert result is not None, "G1 scalar multiplication returned None (invalid input)"
+    return G1Point(result)
+
+
+def _mul_g2(point: G2Point, scalar: Scalar) -> G2Point:
+    """multiply() for G2 — same non-None assertion as _mul_g1."""
+    result = multiply(point, scalar)
+    assert result is not None, "G2 scalar multiplication returned None (invalid input)"
+    return G2Point(result)
 
 
 # ==============================================================================
 # DATA CLASSES
-# Replaces plain dicts for all return types, giving IDE support and
-# making the client/mint boundary explicit at the type level.
 # ==============================================================================
 
 @dataclass
 class TokenSecrets:
     """
     Client-side only. Contains the spend private key — never passed to the mint.
-    Supports both attribute access (secrets.spend_address_hex) and legacy dict-style
-    access (secrets["spend_address_hex"]) for backward compatibility with existing tests.
     """
-    spend_priv: keys.PrivateKey
-    spend_address_hex: str
+    spend_priv:          keys.PrivateKey
+    spend_address_hex:   str
     spend_address_bytes: bytes
-    r: int                          # BLS blinding scalar in Z_q
-
+    r:                   Scalar     # BLS blinding factor in Z_q
 
 
 @dataclass
 class BlindedPoints:
-    Y: G1Point                      # H(spend_address) — unblinded hash-to-curve
-    B: G1Point                      # r * Y             — blinded point sent to mint
-
+    Y: G1Point      # H(spend_address) — unblinded hash-to-curve result
+    B: G1Point      # r * Y            — blinded point sent to mint
 
 
 @dataclass
 class RedemptionProof:
-    msg_hash: bytes
-    compact_hex: str                # 128-char r||s hex, matches TS compactHex
-    recovery_bit: int               # 0 or 1 — note: EVM ecrecover uses v = recovery_bit + 27
+    msg_hash:      bytes
+    compact_hex:   str              # 128-char r||s hex, matches TS compactHex
+    recovery_bit:  int              # 0 or 1 — EVM ecrecover uses v = recovery_bit + 27
     signature_obj: keys.Signature   # raw eth_keys object for local verify
-
 
 
 @dataclass
 class MintKeypair:
-    sk: int                         # BLS scalar private key
-    pk: G2Point                     # sk * G2 — public key on G2
-
+    sk: Scalar      # BLS scalar private key in Z_q
+    pk: G2Point     # sk * G2 — public verification key
 
 
 # ==============================================================================
@@ -71,12 +88,12 @@ def hash_to_curve(message_bytes: bytes) -> G1Point:
     """
     counter = 0
     while True:
-        h = keccak(message_bytes + counter.to_bytes(4, 'big'))
-        x = int.from_bytes(h, 'big') % field_modulus
+        h = keccak(message_bytes + counter.to_bytes(4, "big"))
+        x = int.from_bytes(h, "big") % field_modulus
         y_squared = (pow(x, 3, field_modulus) + 3) % field_modulus
         if pow(y_squared, (field_modulus - 1) // 2, field_modulus) == 1:
             y = pow(y_squared, (field_modulus + 1) // 4, field_modulus)
-            return (FQ(x), FQ(y))
+            return G1Point((FQ(x), FQ(y)))
         counter += 1
 
 
@@ -88,10 +105,10 @@ def serialize_g1(point: G1Point) -> tuple[int, int]:
 def parse_g1(x: int, y: int) -> G1Point:
     """
     Reconstructs a G1Point from two uint256 integers (e.g. from a contract event).
-    Raises ValueError if the result is not on the curve — guards mint_blind_sign
-    against malformed client inputs.
+    Raises ValueError if the point is not on the curve — guards mint_blind_sign
+    against malformed or adversarial client inputs.
     """
-    point = (FQ(x), FQ(y))
+    point = G1Point((FQ(x), FQ(y)))
     if not is_on_curve(point, b):
         raise ValueError(f"Point ({x}, {y}) is not on the BN254 G1 curve")
     return point
@@ -99,8 +116,8 @@ def parse_g1(x: int, y: int) -> G1Point:
 
 def generate_mint_keypair() -> MintKeypair:
     """Generates a random BLS scalar and its G2 public key."""
-    sk = int.from_bytes(os.urandom(32), 'big') % curve_order
-    pk = multiply(G2, sk)
+    sk = Scalar(int.from_bytes(os.urandom(32), "big") % curve_order)
+    pk = _mul_g2(G2Point(G2), sk)
     return MintKeypair(sk=sk, pk=pk)
 
 
@@ -113,14 +130,14 @@ def derive_token_secrets(master_seed: bytes, token_index: int) -> TokenSecrets:
     Deterministically derives all client-side secrets for a given token index.
     The returned object is CLIENT-ONLY — spend_priv must never be sent to the mint.
     """
-    base_material = keccak(master_seed + token_index.to_bytes(4, 'big'))
+    base_material = keccak(master_seed + token_index.to_bytes(4, "big"))
 
     spend_priv_bytes = keccak(b"spend" + base_material)
     spend_priv = keys.PrivateKey(spend_priv_bytes)
     spend_address_hex = spend_priv.public_key.to_address()
     spend_address_bytes = bytes.fromhex(spend_address_hex[2:])
 
-    r = int.from_bytes(keccak(b"blind" + base_material), 'big') % curve_order
+    r = Scalar(int.from_bytes(keccak(b"blind" + base_material), "big") % curve_order)
 
     return TokenSecrets(
         spend_priv=spend_priv,
@@ -130,26 +147,29 @@ def derive_token_secrets(master_seed: bytes, token_index: int) -> TokenSecrets:
     )
 
 
-def blind_token(spend_address_bytes: bytes, r: int) -> BlindedPoints:
+def blind_token(spend_address_bytes: bytes, r: Scalar) -> BlindedPoints:
     """
     Maps the token secret to G1 and applies the multiplicative blinding factor.
     Returns BlindedPoints(Y, B) where only B is sent to the mint.
     """
     Y = hash_to_curve(spend_address_bytes)
-    B = multiply(Y, r)
+    B = _mul_g1(Y, r)
     return BlindedPoints(Y=Y, B=B)
 
 
-def unblind_signature(S_prime: G1Point, r: int) -> G1Point:
+def unblind_signature(S_prime: G1Point, r: Scalar) -> G1Point:
     """
     Removes the blinding factor from the mint's signature.
     Returns S = S' * r^-1.
     """
-    r_inv = pow(r, -1, curve_order)
-    return multiply(S_prime, r_inv)
+    r_inv = Scalar(pow(r, -1, curve_order))
+    return _mul_g1(S_prime, r_inv)
 
 
-def generate_redemption_proof(spend_priv: keys.PrivateKey, destination_address: str) -> RedemptionProof:
+def generate_redemption_proof(
+    spend_priv: keys.PrivateKey,
+    destination_address: str,
+) -> RedemptionProof:
     """
     Generates the anti-MEV ECDSA signature binding the token to a destination address.
 
@@ -158,7 +178,7 @@ def generate_redemption_proof(spend_priv: keys.PrivateKey, destination_address: 
     or use the (r, s, v) split form directly.
     """
     payload_str = f"Pay to: {destination_address}"
-    msg_hash = keccak(payload_str.encode('utf-8'))
+    msg_hash = keccak(payload_str.encode("utf-8"))
     ecdsa_sig = spend_priv.sign_msg_hash(msg_hash)
 
     r_hex = hex(ecdsa_sig.r)[2:].zfill(64)
@@ -177,7 +197,7 @@ def generate_redemption_proof(spend_priv: keys.PrivateKey, destination_address: 
 # 3. MINT OPERATIONS (Server Daemon)
 # ==============================================================================
 
-def mint_blind_sign(B: G1Point, sk_mint: int) -> G1Point:
+def mint_blind_sign(B: G1Point, sk_mint: Scalar) -> G1Point:
     """
     Blindly signs a client's G1 point using the mint's scalar private key.
     Returns S' = sk * B.
@@ -187,7 +207,7 @@ def mint_blind_sign(B: G1Point, sk_mint: int) -> G1Point:
     """
     if not is_on_curve(B, b):
         raise ValueError("Blinded point B is not on the BN254 G1 curve")
-    return multiply(B, sk_mint)
+    return _mul_g1(B, sk_mint)
 
 
 # ==============================================================================

@@ -12,9 +12,10 @@ Then re-run pytest — new files are picked up automatically.
 import json
 import pytest
 from pathlib import Path
-from py_ecc.bn128 import G2, multiply
+from py_ecc.bn128 import G2
 
 import ghost_library as gl
+from ghost_library import Scalar, G2Point, _mul_g2
 
 # ==============================================================================
 # VECTOR DISCOVERY
@@ -57,8 +58,8 @@ if not PARAMS:
 @pytest.mark.parametrize("v", PARAMS, ids=IDS)
 def test_mint_pk_vector(v):
     """Proves the Mint's G2 Public Key derives correctly from the scalar."""
-    sk_mint = int(v["MINT_BLS_PRIVKEY"], 16)
-    pk_mint = multiply(G2, sk_mint)
+    sk_mint = Scalar(int(v["MINT_BLS_PRIVKEY"], 16))
+    pk_mint = _mul_g2(G2Point(G2), sk_mint)
 
     assert hex(pk_mint[0].coeffs[0].n)[2:] == v["PK_MINT"]["X_real"]
     assert hex(pk_mint[0].coeffs[1].n)[2:] == v["PK_MINT"]["X_imag"]
@@ -95,7 +96,7 @@ def test_mint_blind_sign_vector(v):
     master_seed = v["MASTER_SEED"].encode("utf-8")
     secrets = gl.derive_token_secrets(master_seed, v["TOKEN_INDEX"])
     blinded = gl.blind_token(secrets.spend_address_bytes, secrets.r)
-    sk_mint = int(v["MINT_BLS_PRIVKEY"], 16)
+    sk_mint = Scalar(int(v["MINT_BLS_PRIVKEY"], 16))
 
     S_prime = gl.mint_blind_sign(blinded.B, sk_mint)
 
@@ -109,7 +110,7 @@ def test_unblind_signature_vector(v):
     master_seed = v["MASTER_SEED"].encode("utf-8")
     secrets = gl.derive_token_secrets(master_seed, v["TOKEN_INDEX"])
     blinded = gl.blind_token(secrets.spend_address_bytes, secrets.r)
-    sk_mint = int(v["MINT_BLS_PRIVKEY"], 16)
+    sk_mint = Scalar(int(v["MINT_BLS_PRIVKEY"], 16))
     S_prime = gl.mint_blind_sign(blinded.B, sk_mint)
 
     S = gl.unblind_signature(S_prime, secrets.r)
@@ -125,8 +126,8 @@ def test_full_lifecycle_vector(v):
     This is the mathematical statement the on-chain ecPairing call verifies.
     """
     master_seed = v["MASTER_SEED"].encode("utf-8")
-    sk_mint = int(v["MINT_BLS_PRIVKEY"], 16)
-    pk_mint = multiply(G2, sk_mint)
+    sk_mint = Scalar(int(v["MINT_BLS_PRIVKEY"], 16))
+    pk_mint = _mul_g2(G2Point(G2), sk_mint)
 
     secrets = gl.derive_token_secrets(master_seed, v["TOKEN_INDEX"])
     blinded = gl.blind_token(secrets.spend_address_bytes, secrets.r)

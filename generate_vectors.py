@@ -22,7 +22,8 @@ import os
 import sys
 from pathlib import Path
 
-from py_ecc.bn128 import G2, multiply, curve_order
+from py_ecc.bn128 import G2, curve_order
+from ghost_library import Scalar, G2Point, _mul_g2
 
 # Import the library so vectors are always consistent with its implementation.
 # If the library changes, re-running this script regenerates ground truth.
@@ -39,7 +40,8 @@ def compute_vector(master_seed_hex: str, sk_int: int, token_index: int) -> dict:
     master_seed_bytes = master_seed_hex.encode("utf-8")
 
     # --- Mint public key ---
-    pk_g2 = multiply(G2, sk_int)
+    sk = Scalar(sk_int)
+    pk_g2 = _mul_g2(G2Point(G2), sk)
     x_real = hex(pk_g2[0].coeffs[0].n)[2:]
     x_imag = hex(pk_g2[0].coeffs[1].n)[2:]
     y_real = hex(pk_g2[1].coeffs[0].n)[2:]
@@ -52,7 +54,7 @@ def compute_vector(master_seed_hex: str, sk_int: int, token_index: int) -> dict:
     blinded = gl.blind_token(secrets.spend_address_bytes, secrets.r)
 
     # --- Mint signs ---
-    S_prime = gl.mint_blind_sign(blinded.B, sk_int)
+    S_prime = gl.mint_blind_sign(blinded.B, sk)
 
     # --- Client unblinds ---
     S = gl.unblind_signature(S_prime, secrets.r)
