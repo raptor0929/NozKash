@@ -98,23 +98,7 @@ export function unblindSignature(S_prime: mcl.G1, r: bigint): mcl.G1 {
     return S;
 }
 
-/**
- * Generates the anti-MEV ECDSA signature binding the token to a destination.
- */
-export function generateRedemptionProof(spendPriv: Uint8Array, destinationAddress: string): RedemptionProof {
-    const payloadStr = `Pay to: ${destinationAddress}`;
-    const msgHash = keccak256(Buffer.from(payloadStr, 'utf-8'));
-    
-    const signatureObj = secp256k1.sign(msgHash, spendPriv);
-    
-    // Format perfectly to 64 chars
-    const rHex = signatureObj.r.toString(16).padStart(64, '0');
-    const sHex = signatureObj.s.toString(16).padStart(64, '0');
-    const compactHex = rHex + sHex;
-    const recoveryBit = signatureObj.recovery || 0;
 
-    return { msgHash, signatureObj, compactHex, recoveryBit };
-}
 
 // ==============================================================================
 // 3. MINT OPERATIONS (Server Daemon)

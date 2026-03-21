@@ -68,11 +68,12 @@ describe('👻 Ghost-Tip Cryptographic Vectors (TypeScript)', () => {
         expect(sCoords[2]).toBe(vectors.S_UNBLINDED.Y);
     });
 
-    it('should successfully verify the MEV protection payload', () => {
+    it('should successfully verify the MEV protection payload', async () => {
         const masterSeedBytes = Buffer.from(vectors.MASTER_SEED, 'utf-8');
         const secrets = gl.deriveTokenSecrets(masterSeedBytes, vectors.TOKEN_INDEX);
         
-        const proof = gl.generateRedemptionProof(secrets.spendPriv, "0x89205A3A3b2A69De6Dbf7f01ED13B2108B2c43e7");
+        // Add the await keyword here
+        const proof = await gl.generateRedemptionProof(secrets.spendPriv, "0x89205A3A3b2A69De6Dbf7f01ED13B2108B2c43e7");
         
         const isValid = gl.verifyEcdsaMevProtection(
             proof.msgHash, 
@@ -82,4 +83,5 @@ describe('👻 Ghost-Tip Cryptographic Vectors (TypeScript)', () => {
         
         expect(isValid).toBe(true);
     });
+
 });
