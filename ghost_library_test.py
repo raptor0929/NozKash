@@ -6,6 +6,7 @@ import ghost_library as gl
 from ghost_library import (
     GhostError, CurveError, InvalidPointError, ScalarMultiplicationError,
     DerivationError, VerificationError,
+    TokenKeypair,
 )
 
 # ==============================================================================
@@ -14,7 +15,6 @@ from ghost_library import (
 
 @pytest.fixture
 def setup_data():
-    """Provides standard deterministic inputs for the tests."""
     master_seed = b"pytest_secret_master_seed_2026"
     token_index = 42
     destination = "0x89205A3A3b2A69De6Dbf7f01ED13B2108B2c43e7"
@@ -31,12 +31,11 @@ def live_keypair():
 # ==============================================================================
 
 def test_exception_hierarchy():
-    """Verifies the exception inheritance chain is correctly structured."""
-    assert issubclass(CurveError,                 GhostError)
-    assert issubclass(InvalidPointError,          CurveError)
-    assert issubclass(ScalarMultiplicationError,  CurveError)
-    assert issubclass(DerivationError,            GhostError)
-    assert issubclass(VerificationError,          GhostError)
+    assert issubclass(CurveError,                GhostError)
+    assert issubclass(InvalidPointError,         CurveError)
+    assert issubclass(ScalarMultiplicationError, CurveError)
+    assert issubclass(DerivationError,           GhostError)
+    assert issubclass(VerificationError,         GhostError)
 
 
 # ==============================================================================
@@ -44,7 +43,6 @@ def test_exception_hierarchy():
 # ==============================================================================
 
 def test_mint_keypair_generation():
-    """Ensures the Mint generates valid scalar keys and G2 points."""
     keypair = gl.generate_mint_keypair()
     assert isinstance(keypair.sk, int)
     assert 0 < keypair.sk < curve_order
@@ -52,40 +50,79 @@ def test_mint_keypair_generation():
 
 
 def test_mint_keypairs_are_unique():
-    """Two sequential keypairs must not be identical."""
     kp1 = gl.generate_mint_keypair()
     kp2 = gl.generate_mint_keypair()
     assert kp1.sk != kp2.sk
 
 
 # ==============================================================================
-# TOKEN DERIVATION
+# TOKEN DERIVATION — structure
+# ==============================================================================
+
+def test_derive_token_secrets_returns_two_keypairs(setup_data):
+    """Both spend and blind are fully populated TokenKeypair instances."""
+    master_seed, token_index, _ = setup_data
+    secrets = gl.derive_token_secrets(master_seed, token_index)
+
+    for kp in (secrets.spend, secrets.blind):
+        assert isinstance(kp, TokenKeypair)
+        assert kp.address.startswith("0x")
+        assert len(kp.address) == 42
+        assert kp.pub_hex.startswith("0x04")
+        assert len(bytes.fromhex(kp.pub_hex[2:])) == 65
+        assert len(kp.address_bytes) == 20
+
+
+def test_spend_and_blind_addresses_are_different(setup_data):
+    """The two keypairs must have distinct addresses."""
+    master_seed, token_index, _ = setup_data
+    secrets = gl.derive_token_secrets(master_seed, token_index)
+    assert secrets.spend.address != secrets.blind.address
+
+
+def test_deposit_id_is_blind_address(setup_data):
+    master_seed, token_index, _ = setup_data
+    secrets = gl.derive_token_secrets(master_seed, token_index)
+    assert secrets.deposit_id == secrets.blind.address
+
+
+def test_r_matches_blind_priv_scalar(setup_data):
+    """r must equal int(blind_priv) % curve_order — derivation consistency."""
+    master_seed, token_index, _ = setup_data
+    secrets = gl.derive_token_secrets(master_seed, token_index)
+    expected = int.from_bytes(secrets.blind.priv.to_bytes(), "big") % curve_order
+    assert secrets.r == expected
+
+
+# ==============================================================================
+# TOKEN DERIVATION — determinism and isolation
 # ==============================================================================
 
 def test_token_derivation_is_deterministic(setup_data):
-    """Proves that passing the same seed and index yields the exact same secrets."""
     master_seed, token_index, _ = setup_data
     s1 = gl.derive_token_secrets(master_seed, token_index)
     s2 = gl.derive_token_secrets(master_seed, token_index)
-    assert s1.spend_address_hex == s2.spend_address_hex
-    assert s1.spend_priv.to_hex() == s2.spend_priv.to_hex()
+    assert s1.spend.address == s2.spend.address
+    assert s1.blind.address == s2.blind.address
+    assert s1.spend.priv.to_hex() == s2.spend.priv.to_hex()
+    assert s1.blind.priv.to_hex() == s2.blind.priv.to_hex()
     assert s1.r == s2.r
 
 
 def test_different_indices_yield_different_secrets(setup_data):
-    """Different token indices must produce completely different outputs."""
     master_seed, _, _ = setup_data
     s0 = gl.derive_token_secrets(master_seed, 0)
     s1 = gl.derive_token_secrets(master_seed, 1)
-    assert s0.spend_address_hex != s1.spend_address_hex
+    assert s0.spend.address != s1.spend.address
+    assert s0.blind.address != s1.blind.address
     assert s0.r != s1.r
 
 
 def test_different_seeds_yield_different_secrets():
-    """Different seeds must produce completely different outputs for the same index."""
     s1 = gl.derive_token_secrets(b"seed_a", 0)
     s2 = gl.derive_token_secrets(b"seed_b", 0)
-    assert s1.spend_address_hex != s2.spend_address_hex
+    assert s1.spend.address != s2.spend.address
+    assert s1.blind.address != s2.blind.address
 
 
 def test_index_boundary_256_differs_from_0(setup_data):
@@ -96,7 +133,8 @@ def test_index_boundary_256_differs_from_0(setup_data):
     master_seed, _, _ = setup_data
     s0   = gl.derive_token_secrets(master_seed, 0)
     s256 = gl.derive_token_secrets(master_seed, 256)
-    assert s0.spend_address_hex != s256.spend_address_hex
+    assert s0.spend.address != s256.spend.address
+    assert s0.blind.address != s256.blind.address
     assert s0.r != s256.r
 
 
@@ -120,7 +158,6 @@ def test_derive_rejects_oversized_index():
 # ==============================================================================
 
 def test_parse_g1_valid_point(setup_data):
-    """A round-trip through serialize_g1 / parse_g1 must be lossless."""
     master_seed, token_index, _ = setup_data
     secrets = gl.derive_token_secrets(master_seed, token_index)
     blinded = gl.blind_token(secrets.spend_address_bytes, secrets.r)
@@ -131,10 +168,7 @@ def test_parse_g1_valid_point(setup_data):
 
 
 def test_parse_g1_rejects_invalid_point():
-    """parse_g1 must raise InvalidPointError for a point not on the curve.
-    Note: (1, 2) is actually valid on BN254 since 2^2 == 1^3 + 3 == 4.
-    (1, 1) is not: 1^2=1 != 1^3+3=4.
-    """
+    """(1, 1) is off-curve on BN254: 1^2=1 != 1^3+3=4."""
     with pytest.raises(InvalidPointError) as exc_info:
         gl.parse_g1(1, 1)
     assert isinstance(exc_info.value, CurveError)
@@ -144,10 +178,8 @@ def test_parse_g1_rejects_invalid_point():
 
 
 def test_mint_blind_sign_rejects_invalid_point():
-    """mint_blind_sign must raise InvalidPointError for an off-curve input."""
     from py_ecc.bn128 import FQ
     from ghost_library import G1Point
-    # (1, 1) is off-curve on BN254: 1^2=1 != 1^3+3=4
     bad_point = G1Point((FQ(1), FQ(1)))
     keypair = gl.generate_mint_keypair()
     with pytest.raises(InvalidPointError):
@@ -159,7 +191,6 @@ def test_mint_blind_sign_rejects_invalid_point():
 # ==============================================================================
 
 def test_full_protocol_lifecycle(setup_data, live_keypair):
-    """Integration test: proves the math holds from blinding through verification."""
     master_seed, token_index, destination = setup_data
     keypair = live_keypair
 
@@ -189,7 +220,6 @@ def test_full_protocol_lifecycle(setup_data, live_keypair):
 # ==============================================================================
 
 def test_mev_protection_rejects_tampered_destination(setup_data):
-    """Tampered destination must yield a wrong address from ecrecover."""
     master_seed, token_index, _ = setup_data
     secrets = gl.derive_token_secrets(master_seed, token_index)
     proof = gl.generate_redemption_proof(secrets.spend_priv, "0xAliceAddress")
@@ -201,24 +231,17 @@ def test_mev_protection_rejects_tampered_destination(setup_data):
 
 
 def test_mev_protection_rejects_wrong_recovery_bit(setup_data):
-    """
-    Wrong recovery bit must cause ecrecover to derive the wrong address.
-    This directly tests that our verify path actually uses the recovery bit,
-    not a stored public key shortcut.
-    """
     master_seed, token_index, _ = setup_data
     secrets = gl.derive_token_secrets(master_seed, token_index)
     proof = gl.generate_redemption_proof(secrets.spend_priv, "0xAliceAddress")
 
     wrong_bit = 1 - proof.recovery_bit
-    # With the wrong recovery bit ecrecover returns a different (garbage) address
     assert gl.verify_ecdsa_mev_protection(
         proof.msg_hash, proof.compact_hex, wrong_bit, secrets.spend_address_hex
     ) is False
 
 
 def test_mev_protection_raises_on_bad_compact_hex(setup_data):
-    """verify_ecdsa_mev_protection must raise VerificationError for malformed hex."""
     master_seed, token_index, _ = setup_data
     secrets = gl.derive_token_secrets(master_seed, token_index)
     proof = gl.generate_redemption_proof(secrets.spend_priv, "0xAlice")
@@ -230,7 +253,6 @@ def test_mev_protection_raises_on_bad_compact_hex(setup_data):
 
 
 def test_mev_protection_raises_on_bad_recovery_bit(setup_data):
-    """verify_ecdsa_mev_protection must raise VerificationError for invalid recovery bit."""
     master_seed, token_index, _ = setup_data
     secrets = gl.derive_token_secrets(master_seed, token_index)
     proof = gl.generate_redemption_proof(secrets.spend_priv, "0xAlice")
@@ -246,7 +268,6 @@ def test_mev_protection_raises_on_bad_recovery_bit(setup_data):
 # ==============================================================================
 
 def test_bls_pairing_rejects_wrong_keypair(setup_data):
-    """Signature from one keypair must not verify under a different keypair."""
     master_seed, token_index, _ = setup_data
     kp1 = gl.generate_mint_keypair()
     kp2 = gl.generate_mint_keypair()
@@ -256,14 +277,11 @@ def test_bls_pairing_rejects_wrong_keypair(setup_data):
     S_prime = gl.mint_blind_sign(blinded.B, kp1.sk)
     S = gl.unblind_signature(S_prime, secrets.r)
 
-    # Should pass under kp1
     assert gl.verify_bls_pairing(S, blinded.Y, kp1.pk) is True
-    # Must fail under kp2
     assert gl.verify_bls_pairing(S, blinded.Y, kp2.pk) is False
 
 
 def test_bls_pairing_rejects_wrong_token(setup_data, live_keypair):
-    """Signature over token A must not verify against token B's Y point."""
     master_seed, _, _ = setup_data
     keypair = live_keypair
 

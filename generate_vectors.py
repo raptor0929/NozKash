@@ -12,7 +12,7 @@ Output layout:
             token_<index>.json   — one file per token index tested
 
 Usage:
-    uv run generate_vectors.py                   # default: 3 keypairs × 5 indices
+    uv run generate_vectors.py                   # default: 3 keypairs × 6 indices
     uv run generate_vectors.py --keypairs 5 --indices 0 1 2 100 255 256 1000
 """
 
@@ -24,8 +24,6 @@ from pathlib import Path
 from py_ecc.bn128 import G2, curve_order
 from ghost_library import Scalar, G2Point, _mul_g2
 
-# Import the library so vectors are always consistent with its implementation.
-# If the library changes, re-running this script regenerates ground truth.
 import ghost_library as gl
 
 VECTORS_DIR = Path("test_vectors")
@@ -35,66 +33,95 @@ def compute_vector(master_seed_hex: str, sk_int: int, token_index: int) -> dict:
     """
     Runs the full protocol for one (seed, keypair, token_index) combination
     and returns a dict containing every intermediate value.
+
+    Vector format:
+
+    Inputs:
+        MASTER_SEED         hex seed string
+        TOKEN_INDEX         integer
+        MINT_BLS_PRIVKEY    hex BLS scalar
+
+    Mint public key (G2, py_ecc FQ2 coordinate order):
+        PK_MINT.{X_real, X_imag, Y_real, Y_imag}
+
+    Spend keypair (nullifier identity):
+        SPEND_KEYPAIR.priv      hex private key bytes
+        SPEND_KEYPAIR.pub       hex uncompressed public key (0x04...)
+        SPEND_KEYPAIR.address   0x-prefixed Ethereum address (the nullifier)
+
+    Blind keypair (deposit identity + BLS blinding factor):
+        BLIND_KEYPAIR.priv      hex private key bytes
+        BLIND_KEYPAIR.pub       hex uncompressed public key (0x04...)
+        BLIND_KEYPAIR.address   0x-prefixed Ethereum address (the deposit ID)
+        BLIND_KEYPAIR.r         hex BLS scalar = int(priv) % curve_order
+
+    BLS protocol intermediates:
+        Y_HASH_TO_CURVE.{X, Y}  H(spend_address) on BN254 G1
+        B_BLINDED.{X, Y}        r·Y — sent to mint
+        S_PRIME.{X, Y}          sk·B — mint's blind signature
+        S_UNBLINDED.{X, Y}      S'·r⁻¹ — the final token signature
     """
     master_seed_bytes = master_seed_hex.encode("utf-8")
 
     # --- Mint public key ---
     sk = Scalar(sk_int)
     pk_g2 = _mul_g2(G2Point(G2), sk)
-    x_real = hex(pk_g2[0].coeffs[0].n)[2:]
-    x_imag = hex(pk_g2[0].coeffs[1].n)[2:]
-    y_real = hex(pk_g2[1].coeffs[0].n)[2:]
-    y_imag = hex(pk_g2[1].coeffs[1].n)[2:]
 
-    # --- Client secrets ---
+    # --- Client secrets (both keypairs) ---
     secrets = gl.derive_token_secrets(master_seed_bytes, token_index)
 
-    # --- Blinding ---
+    # --- BLS protocol ---
     blinded = gl.blind_token(secrets.spend_address_bytes, secrets.r)
-
-    # --- Mint signs ---
     S_prime = gl.mint_blind_sign(blinded.B, sk)
-
-    # --- Client unblinds ---
-    S = gl.unblind_signature(S_prime, secrets.r)
+    S       = gl.unblind_signature(S_prime, secrets.r)
 
     return {
-        # Inputs
-        "MASTER_SEED": master_seed_hex,
-        "TOKEN_INDEX": token_index,
+        # ── Inputs ────────────────────────────────────────────────────────────
+        "MASTER_SEED":      master_seed_hex,
+        "TOKEN_INDEX":      token_index,
         "MINT_BLS_PRIVKEY": hex(sk_int),
 
-        # Mint public key (G2)
+        # ── Mint public key (G2) ──────────────────────────────────────────────
         "PK_MINT": {
-            "X_real": x_real,
-            "X_imag": x_imag,
-            "Y_real": y_real,
-            "Y_imag": y_imag,
+            "X_real": hex(pk_g2[0].coeffs[0].n)[2:],
+            "X_imag": hex(pk_g2[0].coeffs[1].n)[2:],
+            "Y_real": hex(pk_g2[1].coeffs[0].n)[2:],
+            "Y_imag": hex(pk_g2[1].coeffs[1].n)[2:],
         },
 
-        # Client-derived secrets
-        "SPEND_ADDRESS": secrets.spend_address_hex,
-        "BLINDING_R": hex(secrets.r),
+        # ── Spend keypair (nullifier) ─────────────────────────────────────────
+        # The spend address is the token's nullifier — revealed only at redemption.
+        # The private key signs the anti-MEV payload "Pay to: <recipient>".
+        "SPEND_KEYPAIR": {
+            "priv":    secrets.spend.priv.to_bytes().hex(),
+            "pub":     secrets.spend.pub_hex,
+            "address": secrets.spend.address,
+        },
 
-        # Hash-to-curve (Y = H(spend_address))
+        # ── Blind keypair (deposit ID + blinding factor) ──────────────────────
+        # The blind address is the deposit ID — submitted with the deposit tx.
+        # It reveals nothing about the spend address without the master seed.
+        # The private key, as a BN254 scalar, IS the multiplicative blinding factor r.
+        "BLIND_KEYPAIR": {
+            "priv":    secrets.blind.priv.to_bytes().hex(),
+            "pub":     secrets.blind.pub_hex,
+            "address": secrets.blind.address,
+            "r":       hex(secrets.r),   # int(priv) % curve_order
+        },
+
+        # ── BLS protocol intermediates ────────────────────────────────────────
         "Y_HASH_TO_CURVE": {
             "X": hex(blinded.Y[0].n)[2:],
             "Y": hex(blinded.Y[1].n)[2:],
         },
-
-        # Blinded point (B = r * Y)
         "B_BLINDED": {
             "X": hex(blinded.B[0].n)[2:],
             "Y": hex(blinded.B[1].n)[2:],
         },
-
-        # Blind signature (S' = sk * B)
         "S_PRIME": {
             "X": hex(S_prime[0].n)[2:],
             "Y": hex(S_prime[1].n)[2:],
         },
-
-        # Unblinded token signature (S = S' * r^-1)
         "S_UNBLINDED": {
             "X": hex(S[0].n)[2:],
             "Y": hex(S[1].n)[2:],
@@ -133,8 +160,6 @@ def main():
     )
     args = parser.parse_args()
 
-    # Always include index 256 to exercise the DataView fix (would silently collide
-    # with index 0 under the old Uint8Array([0,0,0,tokenIndex]) encoding).
     indices = sorted(set(args.indices))
 
     print(f"Generating {args.keypairs} keypair(s) × {len(indices)} index/indices "
@@ -144,14 +169,14 @@ def main():
     for kp_num in range(1, args.keypairs + 1):
         master_seed_hex, sk_int = generate_keypair()
         seed_prefix = master_seed_hex[:8]
-        sk_prefix = hex(sk_int)[-8:]
-        kp_dir = args.out / f"{seed_prefix}_{sk_prefix}"
+        sk_prefix   = hex(sk_int)[-8:]
+        kp_dir      = args.out / f"{seed_prefix}_{sk_prefix}"
 
         print(f"[{kp_num}/{args.keypairs}] seed={seed_prefix}...  sk=...{sk_prefix}")
 
         for idx in indices:
             vector = compute_vector(master_seed_hex, sk_int, idx)
-            path = write_vector(vector, kp_dir)
+            path   = write_vector(vector, kp_dir)
             print(f"    token_{idx:>5}  →  {path}")
             total += 1
 

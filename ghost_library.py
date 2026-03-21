@@ -9,10 +9,6 @@ from py_ecc.bn128 import (
 
 # ==============================================================================
 # EXCEPTION HIERARCHY
-#
-# All exceptions raised by this library inherit from GhostError so callers
-# can catch the whole family with a single `except GhostError` if desired,
-# while still being able to discriminate by specific subclass.
 # ==============================================================================
 
 class GhostError(Exception):
@@ -47,17 +43,6 @@ class VerificationError(GhostError):
 
 # ==============================================================================
 # TYPE ALIASES
-#
-# py_ecc represents curve points as plain tuples of field elements:
-#   G1Point — a point on BN254 G1: (FQ,  FQ)
-#   G2Point — a point on BN254 G2: (FQ2, FQ2)
-#
-# NewType makes these structurally identical to tuple at runtime (zero cost)
-# but distinct at the type-checker level, so passing a G2Point where a G1Point
-# is expected is a static error rather than a silent wrong-curve multiply.
-#
-# Scalar — a field element in Z_q (0 < s < curve_order). Distinguishes BN254
-# scalars from plain ints used for e.g. token indices or byte lengths.
 # ==============================================================================
 
 G1Point = NewType("G1Point", tuple[FQ,  FQ])
@@ -94,20 +79,70 @@ def _mul_g2(point: G2Point, scalar: Scalar) -> G2Point:
 # ==============================================================================
 
 @dataclass
+class TokenKeypair:
+    """
+    A secp256k1 keypair derived deterministically from the master seed.
+    Both the spend keypair and the blind keypair share this structure.
+
+    The Ethereum address of each keypair serves a protocol role:
+      - spend keypair address → nullifier (prevents double-spend)
+      - blind keypair address → deposit ID (deterministic, unlinkable identifier)
+    """
+    priv:         keys.PrivateKey
+    pub_hex:      str     # 0x04-prefixed uncompressed public key (65 bytes, 132 hex chars)
+    address:      str     # 0x-prefixed Ethereum address (20 bytes)
+    address_bytes: bytes  # raw 20 bytes
+
+
+@dataclass
 class TokenSecrets:
     """
-    Client-side only. Contains the spend private key — never passed to the mint.
+    Client-side only. Both keypairs must never be sent to the mint.
+
+    spend:  the nullifier keypair — address is the token's unique on-chain identifier
+            at redemption time; the private key signs the anti-MEV payload.
+
+    blind:  the blinding keypair — address is the deterministic deposit ID submitted
+            with the deposit transaction; the private key (as a BN254 scalar) is the
+            multiplicative blinding factor r used in B = r·Y.
+
+    The deposit ID (blind.address) is revealed at deposit time but cannot be linked
+    to the spend address (spend.address) without the master seed, preserving privacy.
     """
-    spend_priv:          keys.PrivateKey
-    spend_address_hex:   str
-    spend_address_bytes: bytes
-    r:                   Scalar     # BLS blinding factor in Z_q
+    spend: TokenKeypair
+    blind: TokenKeypair
+
+    @property
+    def spend_priv(self) -> keys.PrivateKey:
+        """Convenience accessor — the spend private key used in generate_redemption_proof."""
+        return self.spend.priv
+
+    @property
+    def spend_address_hex(self) -> str:
+        return self.spend.address
+
+    @property
+    def spend_address_bytes(self) -> bytes:
+        return self.spend.address_bytes
+
+    @property
+    def r(self) -> Scalar:
+        """
+        The BLS blinding scalar, derived from the blind private key.
+        Equivalent to int(blind.priv) % curve_order.
+        """
+        return Scalar(int.from_bytes(self.blind.priv.to_bytes(), "big") % curve_order)
+
+    @property
+    def deposit_id(self) -> str:
+        """The deposit ID: the Ethereum address of the blind keypair."""
+        return self.blind.address
 
 
 @dataclass
 class BlindedPoints:
     Y: G1Point      # H(spend_address) — unblinded hash-to-curve result
-    B: G1Point      # r * Y            — blinded point sent to mint
+    B: G1Point      # r·Y              — blinded point sent to mint
 
 
 @dataclass
@@ -121,7 +156,28 @@ class RedemptionProof:
 @dataclass
 class MintKeypair:
     sk: Scalar      # BLS scalar private key in Z_q
-    pk: G2Point     # sk * G2 — public verification key
+    pk: G2Point     # sk·G2 — public verification key
+
+
+# ==============================================================================
+# HELPERS
+# ==============================================================================
+
+def _derive_keypair(domain: bytes, base_material: bytes) -> TokenKeypair:
+    """
+    Derives a secp256k1 TokenKeypair from a domain separator and base material.
+    Domain separators used by this library: b"spend", b"blind".
+    """
+    priv_bytes = keccak(domain + base_material)
+    priv       = keys.PrivateKey(priv_bytes)
+    pub_hex    = "0x04" + priv.public_key.to_bytes().hex()
+    address    = priv.public_key.to_address()
+    return TokenKeypair(
+        priv=priv,
+        pub_hex=pub_hex,
+        address=address,
+        address_bytes=bytes.fromhex(address[2:]),
+    )
 
 
 # ==============================================================================
@@ -152,8 +208,7 @@ def serialize_g1(point: G1Point) -> tuple[int, int]:
 def parse_g1(x: int, y: int) -> G1Point:
     """
     Reconstructs a G1Point from two uint256 integers (e.g. from a contract event).
-    Raises InvalidPointError if the point is not on the curve — guards mint_blind_sign
-    against malformed or adversarial client inputs.
+    Raises InvalidPointError if the point is not on the curve.
     """
     point = G1Point((FQ(x), FQ(y)))
     if not is_on_curve(point, b):
@@ -174,10 +229,16 @@ def generate_mint_keypair() -> MintKeypair:
 
 def derive_token_secrets(master_seed: bytes, token_index: int) -> TokenSecrets:
     """
-    Deterministically derives all client-side secrets for a given token index.
-    The returned object is CLIENT-ONLY — spend_priv must never be sent to the mint.
+    Deterministically derives both token keypairs for a given index.
 
-    Raises DerivationError for invalid inputs.
+    Both keypairs share the same base_material = keccak(seed || index), then
+    are separated by domain: keccak(b"spend" || base) and keccak(b"blind" || base).
+
+    The spend keypair address is the nullifier (revealed only at redemption).
+    The blind keypair address is the deposit ID (revealed at deposit time).
+    The blind private key, interpreted as a BN254 scalar, is the blinding factor r.
+
+    The returned object is CLIENT-ONLY — neither private key must reach the mint.
     """
     if not master_seed:
         raise DerivationError("master_seed must be non-empty")
@@ -188,24 +249,15 @@ def derive_token_secrets(master_seed: bytes, token_index: int) -> TokenSecrets:
 
     base_material = keccak(master_seed + token_index.to_bytes(4, "big"))
 
-    spend_priv_bytes = keccak(b"spend" + base_material)
-    spend_priv = keys.PrivateKey(spend_priv_bytes)
-    spend_address_hex = spend_priv.public_key.to_address()
-    spend_address_bytes = bytes.fromhex(spend_address_hex[2:])
-
-    r = Scalar(int.from_bytes(keccak(b"blind" + base_material), "big") % curve_order)
-
     return TokenSecrets(
-        spend_priv=spend_priv,
-        spend_address_hex=spend_address_hex,
-        spend_address_bytes=spend_address_bytes,
-        r=r,
+        spend=_derive_keypair(b"spend", base_material),
+        blind=_derive_keypair(b"blind", base_material),
     )
 
 
 def blind_token(spend_address_bytes: bytes, r: Scalar) -> BlindedPoints:
     """
-    Maps the token secret to G1 and applies the multiplicative blinding factor.
+    Maps the spend address to G1 and applies the multiplicative blinding factor.
     Returns BlindedPoints(Y, B) where only B is sent to the mint.
     """
     Y = hash_to_curve(spend_address_bytes)
@@ -216,7 +268,7 @@ def blind_token(spend_address_bytes: bytes, r: Scalar) -> BlindedPoints:
 def unblind_signature(S_prime: G1Point, r: Scalar) -> G1Point:
     """
     Removes the blinding factor from the mint's signature.
-    Returns S = S' * r^-1.
+    Returns S = S' · r^-1.
     """
     r_inv = Scalar(pow(r, -1, curve_order))
     return _mul_g1(S_prime, r_inv)
@@ -256,7 +308,7 @@ def generate_redemption_proof(
 def mint_blind_sign(B: G1Point, sk_mint: Scalar) -> G1Point:
     """
     Blindly signs a client's G1 point using the mint's scalar private key.
-    Returns S' = sk * B.
+    Returns S' = sk · B.
 
     Raises InvalidPointError if B is not a valid G1 point — prevents signing
     garbage from a malformed or adversarial client request.
@@ -322,6 +374,11 @@ if __name__ == "__main__":
     keypair = generate_mint_keypair()
 
     secrets = derive_token_secrets(master_seed, token_index=42)
+
+    print(f"Spend address (nullifier):   {secrets.spend_address_hex}")
+    print(f"Blind address (deposit ID):  {secrets.deposit_id}")
+    print(f"Blinding scalar r:           {hex(secrets.r)}")
+
     blinded = blind_token(secrets.spend_address_bytes, secrets.r)
 
     S_prime = mint_blind_sign(blinded.B, keypair.sk)

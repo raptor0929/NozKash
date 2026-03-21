@@ -42,13 +42,9 @@ ALL_VECTORS = load_all_vectors()
 IDS = [v[0] for v in ALL_VECTORS]
 PARAMS = [v[1] for v in ALL_VECTORS]
 
-# Fall back to the legacy vectors.json if no test_vectors/ directory exists yet,
-# so the suite keeps passing before generate_vectors.py has been run.
-if not PARAMS:
-    _legacy = Path(__file__).parent / "vectors.json"
-    if _legacy.exists():
-        PARAMS = [json.loads(_legacy.read_text())]
-        IDS = ["legacy/vectors"]
+# If no test_vectors/ directory exists yet, the suite collects zero tests
+# (pytest will report "no tests ran" rather than failing).
+# Run generate_vectors.py first to populate test_vectors/.
 
 
 # ==============================================================================
@@ -73,8 +69,8 @@ def test_derive_token_secrets_vector(v):
     master_seed = v["MASTER_SEED"].encode("utf-8")
     secrets = gl.derive_token_secrets(master_seed, v["TOKEN_INDEX"])
 
-    assert secrets.spend_address_hex == v["SPEND_ADDRESS"]
-    assert hex(secrets.r) == v["BLINDING_R"]
+    assert secrets.spend.address == v["SPEND_KEYPAIR"]["address"]
+    assert hex(secrets.r) == v["BLIND_KEYPAIR"]["r"]
 
 
 @pytest.mark.parametrize("v", PARAMS, ids=IDS)
