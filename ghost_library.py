@@ -8,6 +8,44 @@ from py_ecc.bn128 import (
 )
 
 # ==============================================================================
+# EXCEPTION HIERARCHY
+#
+# All exceptions raised by this library inherit from GhostError so callers
+# can catch the whole family with a single `except GhostError` if desired,
+# while still being able to discriminate by specific subclass.
+# ==============================================================================
+
+class GhostError(Exception):
+    """Base class for all Ghost-Tip protocol errors."""
+
+
+class CurveError(GhostError):
+    """Raised when a curve point fails a validity check."""
+
+
+class InvalidPointError(CurveError):
+    """Raised when a supplied point does not lie on the expected curve."""
+    def __init__(self, x: int, y: int, curve: str = "BN254 G1") -> None:
+        super().__init__(f"Point (0x{x:x}, 0x{y:x}) is not on the {curve} curve")
+        self.x = x
+        self.y = y
+        self.curve = curve
+
+
+class ScalarMultiplicationError(CurveError):
+    """Raised when scalar multiplication returns an unexpected result (e.g. point at infinity)."""
+
+
+class DerivationError(GhostError):
+    """Raised when token secret derivation receives invalid inputs."""
+
+
+class VerificationError(GhostError):
+    """Raised when a cryptographic verification step produces an unrecoverable error
+    (as distinct from a clean False return from a verify_* function)."""
+
+
+# ==============================================================================
 # TYPE ALIASES
 #
 # py_ecc represents curve points as plain tuples of field elements:
@@ -28,17 +66,26 @@ Scalar  = NewType("Scalar",  int)
 
 
 def _mul_g1(point: G1Point, scalar: Scalar) -> G1Point:
-    """multiply() for G1 — asserts the result is non-None (point at infinity is
-    impossible for valid inputs, but py_ecc types it as Optional)."""
+    """
+    Typed G1 scalar multiplication. Raises ScalarMultiplicationError instead
+    of returning None — py_ecc types multiply() as Optional but None is only
+    possible for the zero scalar, which is invalid in all protocol contexts.
+    """
     result = multiply(point, scalar)
-    assert result is not None, "G1 scalar multiplication returned None (invalid input)"
+    if result is None:
+        raise ScalarMultiplicationError(
+            "G1 scalar multiplication returned the point at infinity — scalar must be non-zero"
+        )
     return G1Point(result)
 
 
 def _mul_g2(point: G2Point, scalar: Scalar) -> G2Point:
-    """multiply() for G2 — same non-None assertion as _mul_g1."""
+    """Typed G2 scalar multiplication — same contract as _mul_g1."""
     result = multiply(point, scalar)
-    assert result is not None, "G2 scalar multiplication returned None (invalid input)"
+    if result is None:
+        raise ScalarMultiplicationError(
+            "G2 scalar multiplication returned the point at infinity — scalar must be non-zero"
+        )
     return G2Point(result)
 
 
@@ -105,12 +152,12 @@ def serialize_g1(point: G1Point) -> tuple[int, int]:
 def parse_g1(x: int, y: int) -> G1Point:
     """
     Reconstructs a G1Point from two uint256 integers (e.g. from a contract event).
-    Raises ValueError if the point is not on the curve — guards mint_blind_sign
+    Raises InvalidPointError if the point is not on the curve — guards mint_blind_sign
     against malformed or adversarial client inputs.
     """
     point = G1Point((FQ(x), FQ(y)))
     if not is_on_curve(point, b):
-        raise ValueError(f"Point ({x}, {y}) is not on the BN254 G1 curve")
+        raise InvalidPointError(x, y)
     return point
 
 
@@ -129,7 +176,16 @@ def derive_token_secrets(master_seed: bytes, token_index: int) -> TokenSecrets:
     """
     Deterministically derives all client-side secrets for a given token index.
     The returned object is CLIENT-ONLY — spend_priv must never be sent to the mint.
+
+    Raises DerivationError for invalid inputs.
     """
+    if not master_seed:
+        raise DerivationError("master_seed must be non-empty")
+    if token_index < 0:
+        raise DerivationError(f"token_index must be non-negative, got {token_index}")
+    if token_index > 0xFFFFFFFF:
+        raise DerivationError(f"token_index must fit in 32 bits, got {token_index}")
+
     base_material = keccak(master_seed + token_index.to_bytes(4, "big"))
 
     spend_priv_bytes = keccak(b"spend" + base_material)
@@ -202,11 +258,11 @@ def mint_blind_sign(B: G1Point, sk_mint: Scalar) -> G1Point:
     Blindly signs a client's G1 point using the mint's scalar private key.
     Returns S' = sk * B.
 
-    Raises ValueError if B is not a valid G1 point — prevents signing garbage
-    from a malformed or adversarial client request.
+    Raises InvalidPointError if B is not a valid G1 point — prevents signing
+    garbage from a malformed or adversarial client request.
     """
     if not is_on_curve(B, b):
-        raise ValueError("Blinded point B is not on the BN254 G1 curve")
+        raise InvalidPointError(B[0].n, B[1].n)
     return _mul_g1(B, sk_mint)
 
 
@@ -221,15 +277,28 @@ def verify_ecdsa_mev_protection(
     expected_address_hex: str,
 ) -> bool:
     """
-    Simulates the EVM ecrecover precompile. Accepts the same compact_hex +
-    recovery_bit format that generate_redemption_proof produces, so the two
-    functions are directly composable without manual reconstruction.
+    Simulates the EVM ecrecover precompile. Derives the signer's address from
+    (msg_hash, compact_hex, recovery_bit) and compares to expected_address_hex.
+
+    Returns False for invalid signatures. Raises VerificationError only for
+    malformed inputs that indicate a programming error (wrong hex length, etc.).
     """
-    r = int(compact_hex[:64], 16)
-    s = int(compact_hex[64:], 16)
-    sig = keys.Signature(vrs=(recovery_bit, r, s))
-    recovered_pubkey = sig.recover_public_key_from_msg_hash(msg_hash)
-    return recovered_pubkey.to_address().lower() == expected_address_hex.lower()
+    if len(compact_hex) != 128:
+        raise VerificationError(
+            f"compact_hex must be 128 hex chars (64 bytes), got {len(compact_hex)}"
+        )
+    if recovery_bit not in (0, 1):
+        raise VerificationError(
+            f"recovery_bit must be 0 or 1, got {recovery_bit}"
+        )
+    try:
+        r = int(compact_hex[:64], 16)
+        s = int(compact_hex[64:], 16)
+        sig = keys.Signature(vrs=(recovery_bit, r, s))
+        recovered_pubkey = sig.recover_public_key_from_msg_hash(msg_hash)
+        return recovered_pubkey.to_address().lower() == expected_address_hex.lower()
+    except Exception:
+        return False
 
 
 def verify_bls_pairing(S: G1Point, Y: G1Point, PK_mint: G2Point) -> bool:
@@ -255,7 +324,6 @@ if __name__ == "__main__":
     secrets = derive_token_secrets(master_seed, token_index=42)
     blinded = blind_token(secrets.spend_address_bytes, secrets.r)
 
-    # Only B crosses the client->mint boundary
     S_prime = mint_blind_sign(blinded.B, keypair.sk)
     S = unblind_signature(S_prime, secrets.r)
     proof = generate_redemption_proof(secrets.spend_priv, destination)
