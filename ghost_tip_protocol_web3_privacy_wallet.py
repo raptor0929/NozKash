@@ -334,7 +334,7 @@ The public key on the $G_2$ curve ($PK_{mint}$) must be exported in two differen
 """
 
 import os
-from py_ecc.bn128 import curve_order, G2, multiply
+from py_ecc.bn128 import curve_order, G2
 
 
 def generate_keys():

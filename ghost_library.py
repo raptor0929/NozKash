@@ -4,7 +4,7 @@ from typing import NewType
 from eth_keys import keys
 from eth_utils import keccak
 from py_ecc.bn128 import (
-    G1, G2, multiply, curve_order, field_modulus, pairing, is_on_curve, FQ, FQ2, b, b2
+    G2, multiply, curve_order, field_modulus, pairing, is_on_curve, FQ, FQ2, b
 )
 
 # ==============================================================================

@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 from eth_keys import keys
 from eth_utils import keccak
 from py_ecc.bn128 import (
-    G1, G2, multiply, curve_order, field_modulus, pairing, FQ
+    G2, multiply, curve_order, field_modulus, pairing, FQ
 )
 
 # Inject variables from the local .env file

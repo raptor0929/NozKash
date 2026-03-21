@@ -19,7 +19,6 @@ Usage:
 import argparse
 import json
 import os
-import sys
 from pathlib import Path
 
 from py_ecc.bn128 import G2, curve_order
