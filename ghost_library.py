@@ -35,8 +35,6 @@ class TokenSecrets:
     spend_address_bytes: bytes
     r: int                          # BLS blinding scalar in Z_q
 
-    def __getitem__(self, key: str):
-        return getattr(self, key)
 
 
 @dataclass
@@ -44,9 +42,6 @@ class BlindedPoints:
     Y: G1Point                      # H(spend_address) — unblinded hash-to-curve
     B: G1Point                      # r * Y             — blinded point sent to mint
 
-    def __iter__(self):
-        """Allows tuple-style unpacking: Y, B = blind_token(...)"""
-        return iter((self.Y, self.B))
 
 
 @dataclass
@@ -56,8 +51,6 @@ class RedemptionProof:
     recovery_bit: int               # 0 or 1 — note: EVM ecrecover uses v = recovery_bit + 27
     signature_obj: keys.Signature   # raw eth_keys object for local verify
 
-    def __getitem__(self, key: str):
-        return getattr(self, key)
 
 
 @dataclass
@@ -65,9 +58,6 @@ class MintKeypair:
     sk: int                         # BLS scalar private key
     pk: G2Point                     # sk * G2 — public key on G2
 
-    def __iter__(self):
-        """Allows tuple-style unpacking: sk, pk = generate_mint_keypair()"""
-        return iter((self.sk, self.pk))
 
 
 # ==============================================================================
@@ -206,32 +196,20 @@ def mint_blind_sign(B: G1Point, sk_mint: int) -> G1Point:
 
 def verify_ecdsa_mev_protection(
     msg_hash: bytes,
-    sig_or_compact_hex,
-    expected_address_or_recovery_bit,
-    expected_address_hex: str = None,
+    compact_hex: str,
+    recovery_bit: int,
+    expected_address_hex: str,
 ) -> bool:
     """
-    Simulates the EVM ecrecover precompile.
-
-    Supports two calling conventions:
-      New: verify_ecdsa_mev_protection(msg_hash, compact_hex, recovery_bit, expected_address)
-      Legacy: verify_ecdsa_mev_protection(msg_hash, signature_obj, expected_address)
+    Simulates the EVM ecrecover precompile. Accepts the same compact_hex +
+    recovery_bit format that generate_redemption_proof produces, so the two
+    functions are directly composable without manual reconstruction.
     """
-    if isinstance(sig_or_compact_hex, keys.Signature):
-        # Legacy call: (msg_hash, signature_obj, expected_address_hex)
-        sig = sig_or_compact_hex
-        address = expected_address_or_recovery_bit
-    else:
-        # New call: (msg_hash, compact_hex, recovery_bit, expected_address_hex)
-        compact_hex = sig_or_compact_hex
-        recovery_bit = expected_address_or_recovery_bit
-        address = expected_address_hex
-        r = int(compact_hex[:64], 16)
-        s = int(compact_hex[64:], 16)
-        sig = keys.Signature(vrs=(recovery_bit, r, s))
-
+    r = int(compact_hex[:64], 16)
+    s = int(compact_hex[64:], 16)
+    sig = keys.Signature(vrs=(recovery_bit, r, s))
     recovered_pubkey = sig.recover_public_key_from_msg_hash(msg_hash)
-    return recovered_pubkey.to_address().lower() == address.lower()
+    return recovered_pubkey.to_address().lower() == expected_address_hex.lower()
 
 
 def verify_bls_pairing(S: G1Point, Y: G1Point, PK_mint: G2Point) -> bool:
