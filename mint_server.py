@@ -103,7 +103,7 @@ GHOST_VAULT_ABI = [
         "name": "DepositLocked",
         "type": "event",
         "inputs": [
-            {"name": "depositId", "type": "uint256", "indexed": True},
+            {"name": "depositId", "type": "address",    "indexed": True},
             {"name": "B",         "type": "uint256[2]", "indexed": False},
         ],
     },
@@ -111,7 +111,7 @@ GHOST_VAULT_ABI = [
         "name": "MintFulfilled",
         "type": "event",
         "inputs": [
-            {"name": "depositId",        "type": "uint256", "indexed": True},
+            {"name": "depositId",        "type": "address",    "indexed": True},
             {"name": "blindedSignature", "type": "uint256[2]", "indexed": False},
         ],
     },
@@ -120,7 +120,7 @@ GHOST_VAULT_ABI = [
         "type": "function",
         "stateMutability": "nonpayable",
         "inputs": [
-            {"name": "depositId",        "type": "uint256"},
+            {"name": "depositId",        "type": "address"},
             {"name": "blindedSignature", "type": "uint256[2]"},
         ],
         "outputs": [],
@@ -215,7 +215,7 @@ class MintDaemon:
         tx_hash    = event["transactionHash"].hex()
 
         self.log.info(
-            "DepositLocked  depositId=0x%x  tx=%s", deposit_id, tx_hash[:18] + "..."
+            "DepositLocked  depositId=%s  tx=%s", deposit_id, tx_hash[:18] + "..."
         )
 
         # 1. Perform the blind signing
@@ -223,12 +223,12 @@ class MintDaemon:
             s_prime_x, s_prime_y = sign_deposit(b_coords, self.config.sk)
         except InvalidPointError as exc:
             self.log.warning(
-                "Rejected depositId=0x%x — invalid G1 point: %s", deposit_id, exc
+                "Rejected depositId=%s — invalid G1 point: %s", deposit_id, exc
             )
             return
         except GhostError as exc:
             self.log.error(
-                "Signing failed for depositId=0x%x: %s", deposit_id, exc
+                "Signing failed for depositId=%s: %s", deposit_id, exc
             )
             return
 
@@ -242,7 +242,7 @@ class MintDaemon:
             await self._submit_announcement(w3, contract, deposit_id, [s_prime_x, s_prime_y])
         except Exception as exc:
             self.log.error(
-                "announce() failed for depositId=0x%x: %s", deposit_id, exc
+                "announce() failed for depositId=%s: %s", deposit_id, exc
             )
 
     async def _submit_announcement(
@@ -269,7 +269,7 @@ class MintDaemon:
         tx_hash = await w3.eth.send_raw_transaction(signed.raw_transaction)
 
         self.log.info(
-            "announce() sent  depositId=0x%x  tx=%s",
+            "announce() sent  depositId=%s  tx=%s",
             deposit_id, tx_hash.hex()[:18] + "...",
         )
 
@@ -277,12 +277,12 @@ class MintDaemon:
         receipt = await w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
         if receipt["status"] == 1:
             self.log.info(
-                "Confirmed        depositId=0x%x  block=%d",
+                "Confirmed        depositId=%s  block=%d",
                 deposit_id, receipt["blockNumber"],
             )
         else:
             self.log.error(
-                "Reverted         depositId=0x%x  tx=%s",
+                "Reverted         depositId=%s  tx=%s",
                 deposit_id, tx_hash.hex(),
             )
 

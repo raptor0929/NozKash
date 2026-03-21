@@ -36,6 +36,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Annotated, Optional
 
+import requests
 import typer
 from dotenv import load_dotenv
 from web3 import Web3
@@ -90,15 +91,15 @@ WALLET_STATE_FILE = Path(".ghost_wallet.json")
 @dataclass
 class TokenRecord:
     """Persisted record for a single token across its full lifecycle."""
-    index:          int
-    spend_address:  str                     # The nullifier / token identity
-    deposit_id:     Optional[str] = None    # 0x-hex uint256 from DepositLocked
-    deposit_tx:     Optional[str] = None    # Deposit transaction hash
-    deposit_block:  Optional[int] = None
-    s_unblinded_x:  Optional[str] = None    # Hex — recovered after unblinding S'
-    s_unblinded_y:  Optional[str] = None
-    redeem_tx:      Optional[str] = None
-    spent:          bool = False
+    index:         int
+    spend_address: str              # Nullifier — the spend keypair address
+    deposit_id:    str              # Deposit ID — the blind keypair address (deterministic)
+    deposit_tx:    Optional[str] = None   # Deposit transaction hash
+    deposit_block: Optional[int] = None
+    s_unblinded_x: Optional[str] = None  # Hex — recovered after unblinding S'
+    s_unblinded_y: Optional[str] = None
+    redeem_tx:     Optional[str] = None
+    spent:         bool = False
 
     @property
     def has_token(self) -> bool:
@@ -110,9 +111,7 @@ class TokenRecord:
             return "SPENT"
         if self.has_token:
             return "READY_TO_REDEEM"
-        if self.deposit_id:
-            return "AWAITING_MINT"
-        return "FRESH"
+        return "AWAITING_MINT" if self.deposit_tx else "FRESH"
 
 
 @dataclass
@@ -200,7 +199,7 @@ GHOST_VAULT_ABI = [
         "name": "DepositLocked",
         "type": "event",
         "inputs": [
-            {"name": "depositId", "type": "uint256", "indexed": True},
+            {"name": "depositId", "type": "address",    "indexed": True},
             {"name": "B",         "type": "uint256[2]", "indexed": False},
         ],
     },
@@ -208,7 +207,7 @@ GHOST_VAULT_ABI = [
         "name": "MintFulfilled",
         "type": "event",
         "inputs": [
-            {"name": "depositId",        "type": "uint256", "indexed": True},
+            {"name": "depositId",        "type": "address",    "indexed": True},
             {"name": "blindedSignature", "type": "uint256[2]", "indexed": False},
         ],
     },
@@ -218,6 +217,7 @@ GHOST_VAULT_ABI = [
         "stateMutability": "payable",
         "inputs": [
             {"name": "blindedPointB", "type": "uint256[2]"},
+            {"name": "depositId",     "type": "address"},
         ],
         "outputs": [],
     },
@@ -283,12 +283,14 @@ def cmd_deposit(config: ClientConfig, token_index: int) -> None:
     section("Step 1 · Derive Token Secrets")
     secrets = derive_token_secrets(config.master_seed, token_index)
 
-    field_log("Token index",      str(token_index))
-    field_log("Spend address",    secrets.spend_address_hex)
-    field_log("Blinding scalar r", hex(secrets.r))
+    field_log("Token index",    str(token_index))
+    field_log("Spend address",  secrets.spend.address)
+    field_log("Blind address",  secrets.blind.address)
+    field_log("Blinding r",     hex(secrets.r))
     log.info("")
-    log.info("    The spend address IS the token secret. It is derived")
-    log.info("    deterministically and never leaves the client.")
+    log.info("    Spend address: nullifier — revealed only at redemption.")
+    log.info("    Blind address: deposit ID — submitted with deposit tx.")
+    log.info("    Neither reveals the other without the master seed.")
 
     # ── Step 2: Blind the token ───────────────────────────────────────────────
     section("Step 2 · Blind Token → G1")
@@ -305,12 +307,11 @@ def cmd_deposit(config: ClientConfig, token_index: int) -> None:
     log.info("    The mint cannot derive the spend address from B without r.")
 
     # ── Step 3: Simulate deposit_id ───────────────────────────────────────────
-    section("Step 3 · Simulate depositId (for record keeping)")
-    # The contract computes: keccak256(abi.encodePacked(msg.sender, block.timestamp, B))
-    # We can't know the exact value pre-submission, but we record B so we can match
-    # the DepositLocked event during scan.
-    log.info("    depositId will be emitted by the contract after submission.")
-    log.info("    Run 'scan' after the mint responds to recover the token.")
+    section("Step 3 · Deposit ID")
+    # The deposit ID is the blind keypair's Ethereum address — deterministic,
+    # re-derivable from the seed alone, and submitted with the deposit tx so
+    # the contract can index the deposit without generating its own ID.
+    field_log("Deposit ID", secrets.deposit_id)
 
     # ── Step 4: Submit deposit transaction ────────────────────────────────────
     section("Step 4 · Submit deposit() Transaction")
@@ -335,7 +336,7 @@ def cmd_deposit(config: ClientConfig, token_index: int) -> None:
         log.error("Insufficient balance: need at least 0.01 ETH")
         raise typer.Exit(code=1)
 
-    tx = contract.functions.deposit([b_x, b_y]).build_transaction({
+    tx = contract.functions.deposit([b_x, b_y], Web3.to_checksum_address(secrets.deposit_id)).build_transaction({
         "from":     wallet,
         "value":    DENOMINATION_WEI,
         "nonce":    nonce,
@@ -358,22 +359,15 @@ def cmd_deposit(config: ClientConfig, token_index: int) -> None:
     field_log("Confirmed at block", str(receipt["blockNumber"]))
     field_log("Gas used",           str(receipt["gasUsed"]))
 
-    # Extract depositId from the DepositLocked event in the receipt
-    deposit_id_hex = None
-    logs = contract.events.DepositLocked().process_receipt(receipt)
-    if logs:
-        deposit_id     = logs[0]["args"]["depositId"]
-        deposit_id_hex = hex(deposit_id)
-        field_log("depositId", deposit_id_hex)
-        log.info("")
-        log.info("    DepositLocked event received. The mint server will now")
-        log.info("    sign B and call announce() with the blinded signature S'.")
+    field_log("Deposit ID confirmed", secrets.deposit_id)
+    log.info("    DepositLocked emitted. The mint server will now")
+    log.info("    sign B and call announce(depositId, S').")
 
     # ── Persist ───────────────────────────────────────────────────────────────
     state.tokens[token_index] = TokenRecord(
         index=token_index,
-        spend_address=secrets.spend_address_hex,
-        deposit_id=deposit_id_hex,
+        spend_address=secrets.spend.address,
+        deposit_id=secrets.deposit_id,
         deposit_tx=tx_hex,
         deposit_block=receipt["blockNumber"],
     )
@@ -416,28 +410,19 @@ def cmd_scan(
         from_block=start_block,
         to_block=latest_block,
     )
-
     field_log("MintFulfilled events found", str(len(fulfilled_events)))
 
-    # Build a lookup: depositId → blinded_signature coords
-    fulfilled: dict[int, tuple[int, int]] = {}
+    # Build a lookup: depositId (address) → blinded_signature coords
+    fulfilled: dict[str, tuple[int, int]] = {}
     for evt in fulfilled_events:
-        did  = evt["args"]["depositId"]
-        sig  = evt["args"]["blindedSignature"]
+        did = Web3.to_checksum_address(evt["args"]["depositId"])
+        sig = evt["args"]["blindedSignature"]
         fulfilled[did] = (int(sig[0]), int(sig[1]))
-        log.debug("    MintFulfilled  depositId=0x%x  S'.x=0x%x...", did, sig[0] >> 240)
+        log.debug("    MintFulfilled  depositId=%s  S'.x=0x%x...", did, sig[0] >> 240)
 
-    # ── Step 2: Also fetch DepositLocked to match unknown tokens ─────────────
-    section("Step 2 · Fetch DepositLocked Events (for unknown deposits)")
-
-    deposit_events = contract.events.DepositLocked().get_logs(
-        from_block=start_block,
-        to_block=latest_block,
-    )
-    field_log("DepositLocked events found", str(len(deposit_events)))
-
-    # ── Step 3: Derive secrets for each candidate index and try to match ──────
-    section("Step 3 · Match Events to Token Indices")
+    # ── Step 2: Derive secrets and look up each token by its deposit ID ───────
+    # The deposit ID is the blind keypair address — deterministic, no B-matching needed.
+    section("Step 2 · Match Tokens by Deposit ID")
 
     scan_indices = range(index_from, index_to + 1)
     recovered = 0
@@ -447,48 +432,25 @@ def cmd_scan(
         log.info("  ── Token %d ──", idx)
 
         secrets = derive_token_secrets(config.master_seed, idx)
-        blinded = blind_token(secrets.spend_address_bytes, secrets.r)
-        b_x, b_y = serialize_g1(blinded.B)
+        deposit_id = Web3.to_checksum_address(secrets.deposit_id)
 
-        field_log("  Spend address",   secrets.spend_address_hex)
-        field_log("  B.x",             hex(b_x))
-        field_log("  B.y",             hex(b_y))
+        field_log("  Spend address", secrets.spend.address)
+        field_log("  Deposit ID",    deposit_id)
 
-        # Find the depositId for this token by matching B in DepositLocked events
-        matched_deposit_id = None
-        for evt in deposit_events:
-            raw_b = evt["args"]["B"]
-            if int(raw_b[0]) == b_x and int(raw_b[1]) == b_y:
-                matched_deposit_id = evt["args"]["depositId"]
-                field_log("  DepositLocked match", f"depositId=0x{matched_deposit_id:x}")
-                break
-
-        # Also check already-known deposit_id from state
-        if matched_deposit_id is None and idx in state.tokens:
-            stored = state.tokens[idx]
-            if stored.deposit_id:
-                matched_deposit_id = int(stored.deposit_id, 16)
-                field_log("  depositId (from state)", hex(matched_deposit_id))
-
-        if matched_deposit_id is None:
-            log.info("  No deposit found for token %d in this range", idx)
-            continue
-
-        # Check if we have a MintFulfilled for this deposit
-        if matched_deposit_id not in fulfilled:
-            log.info("  Deposit found, but mint has not yet responded (no MintFulfilled)")
-            field_log("  Token status", "AWAITING_MINT")
+        # Check if mint has responded for this deposit ID
+        if deposit_id not in fulfilled:
+            log.info("  No MintFulfilled for deposit ID %s in this block range", deposit_id)
             if idx not in state.tokens:
                 state.tokens[idx] = TokenRecord(
                     index=idx,
-                    spend_address=secrets.spend_address_hex,
-                    deposit_id=hex(matched_deposit_id),
+                    spend_address=secrets.spend.address,
+                    deposit_id=deposit_id,
                 )
             continue
 
-        s_prime_x, s_prime_y = fulfilled[matched_deposit_id]
-        field_log("  S'.x (blind sig)",  hex(s_prime_x))
-        field_log("  S'.y (blind sig)",  hex(s_prime_y))
+        s_prime_x, s_prime_y = fulfilled[deposit_id]
+        field_log("  S'.x (blind sig)", hex(s_prime_x))
+        field_log("  S'.y (blind sig)", hex(s_prime_y))
 
         # ── Step 4: Unblind the signature ──────────────────────────────────
         log.info("  Unblinding: S = S' · r⁻¹ mod q ...")
@@ -507,14 +469,14 @@ def cmd_scan(
         log.info("  BLS pairing will be verified at redemption time.")
 
         # ── Step 6: Check nullifier on-chain ──────────────────────────────
-        nullifier_addr = Web3.to_checksum_address(secrets.spend_address_hex)
+        nullifier_addr = Web3.to_checksum_address(secrets.spend.address)
         is_spent = contract.functions.spentNullifiers(nullifier_addr).call()
         field_log("  Nullifier spent on-chain", str(is_spent))
 
         rec = state.tokens.get(idx, TokenRecord(
             index=idx,
-            spend_address=secrets.spend_address_hex,
-            deposit_id=hex(matched_deposit_id),
+            spend_address=secrets.spend.address,
+            deposit_id=deposit_id,
         ))
         rec.s_unblinded_x = hex(s_x)
         rec.s_unblinded_y = hex(s_y)
@@ -538,7 +500,7 @@ def cmd_scan(
 # COMMAND: redeem
 # ==============================================================================
 
-def cmd_redeem(config: ClientConfig, token_index: int, recipient: str) -> None:
+def cmd_redeem(config: ClientConfig, token_index: int, recipient: str, relayer_url: str | None = None) -> None:
     banner(f"REDEEM  —  Token Index {token_index}  →  {recipient}")
 
     state = WalletState.load()
@@ -572,7 +534,8 @@ def cmd_redeem(config: ClientConfig, token_index: int, recipient: str) -> None:
     section("Step 2 · Derive Spend Key")
 
     secrets = derive_token_secrets(config.master_seed, token_index)
-    field_log("Spend address (nullifier)", secrets.spend_address_hex)
+    field_log("Spend address (nullifier)", secrets.spend.address)
+    field_log("Blind address (deposit ID)",  secrets.blind.address)
     log.info("")
     log.info("    The spend address is the nullifier. The contract records it")
     log.info("    as spent after this redemption to prevent double-spending.")
@@ -624,7 +587,7 @@ def cmd_redeem(config: ClientConfig, token_index: int, recipient: str) -> None:
         proof.msg_hash,
         proof.compact_hex,
         proof.recovery_bit,
-        secrets.spend_address_hex,
+        secrets.spend.address,
     )
     field_log("Local ecrecover check", "✅ VALID" if is_valid else "❌ INVALID")
     if not is_valid:
@@ -636,51 +599,99 @@ def cmd_redeem(config: ClientConfig, token_index: int, recipient: str) -> None:
     field_log("Encoded sig (65 bytes)", "0x" + spend_sig_bytes.hex())
     field_log("v (EVM)",                str(proof.recovery_bit + 27))
 
-    # ── Step 5: Submit redeem() transaction ───────────────────────────────────
-    section("Step 5 · Submit redeem() Transaction")
+    # ── Step 5: Build redeem() calldata ─────────────────────────────────────
+    # ABI-encoded calldata is the same regardless of who submits. The relayer
+    # path wraps it in its own transaction (gas charged to relayer wallet).
+    # The direct path signs and submits from the client wallet.
+    section("Step 5 · Build redeem() Calldata")
 
     contract = w3.eth.contract(
         address=Web3.to_checksum_address(config.contract_address),
         abi=GHOST_VAULT_ABI,
     )
-    wallet    = Web3.to_checksum_address(config.wallet_address)
-    nonce     = w3.eth.get_transaction_count(wallet)
-    gas_price = w3.eth.gas_price
 
-    field_log("Caller (pays gas)", wallet)
-    field_log("Recipient",         recipient_checksum)
-    field_log("Nonce",             str(nonce))
-    field_log("Gas price",         f"{Web3.from_wei(gas_price, 'gwei'):.2f} gwei")
-    field_log("S.x (Solidity)",    str(s_x))
-    field_log("S.y (Solidity)",    str(s_y))
-
-    tx = contract.functions.redeem(
+    # Use zero address as `from` placeholder — only needed for calldata encoding.
+    ZERO = "0x0000000000000000000000000000000000000000"
+    calldata = contract.functions.redeem(
         recipient_checksum,
         spend_sig_bytes,
         [s_x, s_y],
-    ).build_transaction({
-        "from":     wallet,
-        "nonce":    nonce,
-        "gasPrice": gas_price,
-    })
+    ).build_transaction({"from": ZERO})["data"]
 
-    signed  = w3.eth.account.sign_transaction(tx, private_key=config.wallet_key)
-    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-    tx_hex  = tx_hash.hex()
+    field_log("Recipient",        recipient_checksum)
+    field_log("S.x",              str(s_x))
+    field_log("S.y",              str(s_y))
+    field_log("Calldata size",    f"{len(bytes.fromhex(calldata[2:]))} bytes")
+    field_log("Calldata prefix",  calldata[:18] + "...")
 
-    field_log("Transaction sent", tx_hex)
-    log.info("    Waiting for confirmation...")
+    if relayer_url:
+        # ── Relayer path ──────────────────────────────────────────────────────
+        # Client sends calldata only — relayer signs and pays gas from its wallet.
+        section("Step 6a · Broadcast via Relayer (relayer pays gas)")
+        field_log("Relayer URL", relayer_url)
+        log.info("    Sending calldata to relayer — no local ETH required.")
 
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+        try:
+            resp = requests.post(
+                relayer_url.rstrip("/") + "/relay",
+                json={"calldata": calldata},
+                timeout=180,
+            )
+        except requests.exceptions.ConnectionError as exc:
+            log.error("Cannot connect to relayer at %s: %s", relayer_url, exc)
+            raise typer.Exit(code=1) from exc
 
-    if receipt["status"] != 1:
-        log.error("Transaction REVERTED  tx=%s", tx_hex)
-        log.error("Possible causes: token already spent, invalid BLS pairing,")
-        log.error("invalid ECDSA signature, or wrong recovery bit.")
-        raise typer.Exit(code=1)
+        if not resp.ok:
+            log.error("Relayer returned %d: %s", resp.status_code, resp.text)
+            raise typer.Exit(code=1)
 
-    field_log("Confirmed at block",  str(receipt["blockNumber"]))
-    field_log("Gas used",            str(receipt["gasUsed"]))
+        result = resp.json()
+        tx_hex = result["tx_hash"]
+        field_log("Transaction hash",   tx_hex)
+        field_log("Confirmed at block", str(result["block_number"]))
+        field_log("Gas used",           str(result["gas_used"]))
+
+    else:
+        # ── Direct path ───────────────────────────────────────────────────────
+        # Client signs and broadcasts its own transaction, paying gas itself.
+        section("Step 6b · Broadcast Directly from Wallet")
+
+        wallet    = Web3.to_checksum_address(config.wallet_address)
+        nonce     = w3.eth.get_transaction_count(wallet)
+        gas_price = w3.eth.gas_price
+
+        field_log("Caller (pays gas)", wallet)
+        field_log("Nonce",             str(nonce))
+        field_log("Gas price",         f"{Web3.from_wei(gas_price, 'gwei'):.2f} gwei")
+
+        tx = contract.functions.redeem(
+            recipient_checksum,
+            spend_sig_bytes,
+            [s_x, s_y],
+        ).build_transaction({
+            "from":     wallet,
+            "nonce":    nonce,
+            "gasPrice": gas_price,
+        })
+
+        signed  = w3.eth.account.sign_transaction(tx, private_key=config.wallet_key)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        tx_hex  = tx_hash.hex()
+
+        field_log("Transaction sent", tx_hex)
+        log.info("    Waiting for confirmation...")
+
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+
+        if receipt["status"] != 1:
+            log.error("Transaction REVERTED  tx=%s", tx_hex)
+            log.error("Possible causes: token already spent, invalid BLS pairing,")
+            log.error("invalid ECDSA signature, or wrong recovery bit.")
+            raise typer.Exit(code=1)
+
+        field_log("Confirmed at block", str(receipt["blockNumber"]))
+        field_log("Gas used",           str(receipt["gasUsed"]))
+
     log.info("")
     log.info("    On-chain checks passed:")
     log.info("      ✅  ecrecover → nullifier matches spend address")
@@ -810,9 +821,16 @@ def redeem(
         "--to",
         help="Recipient Ethereum address.",
     )],
+    relayer: Annotated[Optional[str], typer.Option(
+        "--relayer",
+        help=(
+            "Relayer base URL (e.g. http://localhost:8000). "
+            "When set, the relayer pays gas — no local ETH required."
+        ),
+    )] = None,
 ) -> None:
-    """Unblind a recovered token and submit a redeem() transaction."""
-    cmd_redeem(load_config(), index, to)
+    """Unblind a recovered token and submit redeem() directly or via a relayer."""
+    cmd_redeem(load_config(), index, to, relayer)
 
 
 @app.command()
