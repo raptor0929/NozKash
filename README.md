@@ -4,6 +4,8 @@
 
 Deployed on Avalanche Fuji testnet!
 
+**Contract GhostVault (Fuji):** [Snowtrace testnet — `0x0cd5b34e58c579105A3c080Bb3170d032a544352`](https://testnet.snowtrace.io/address/0x0cd5b34e58c579105A3c080Bb3170d032a544352)
+
 [Simoneth Arianna Gomez](https://github.com/Simonethg), [Fabio Laura](https://github.com/raptor0929), [Ivan Anishchuk](https://github.com/IvanAnishchuk)
 
 **Privacy-preserving eCash for EVM chains — without zero-knowledge proofs.**
