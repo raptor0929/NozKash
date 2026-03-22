@@ -170,7 +170,16 @@ uv run generate_vectors.py
 ├── pyproject.toml                # Python dependencies
 ├── package.json                  # Node dependencies
 ├── tsconfig.json                 # TypeScript config
-└── .env                          # Local secrets (never committed)
+├── .env                          # Local secrets (never committed)
+│
+│── Frontend Wallet (app/) ───────────────────────────
+├── app/src/crypto/               # Browser-bundled BN254 + ghost-library
+├── app/src/components/           # React components (Layout, DepositConfirmModal, Splash)
+├── app/src/context/              # GhostMasterSeedProvider, PrivacyProvider
+├── app/src/hooks/                # useWallet, useRedeemSign
+├── app/src/lib/                  # ghostVault scanner, Fuji RPC, ethereum helpers
+├── app/src/pages/                # Dashboard, Deposit, Redeem, Recovery
+└── app/src/styles/               # eghostcash.css (full custom theme)
 ```
 
 ---
@@ -322,14 +331,84 @@ npx tsx test.ts                      # TypeScript
 
 ---
 
-## Front End App
+## Frontend App
 
+NozKash ships with a mobile-first React wallet UI in the `app/` directory. It connects to MetaMask, derives vault secrets client-side, and talks directly to the deployed GhostVault contract on Avalanche Fuji — no backend server required for the wallet itself.
+
+<!-- TODO: add screenshots
+![Dashboard](docs/screenshots/dashboard.png)
+![Deposit modal](docs/screenshots/deposit-modal.png)
+![Redeem page](docs/screenshots/redeem.png)
+-->
+
+### Quick start
 
 ```bash
 cd app
 npm install
-npm run dev
+npm run dev          # Vite dev server with Fuji RPC proxy
+npm run build        # Production build → dist/
 ```
+
+Copy `.env.example` to `.env` if you need to override the RPC endpoint or inject a dev master seed.
+
+### Stack
+
+Vite 8 + React 19 + Tailwind 4 + TypeScript 5.9. The crypto libraries (`mcl-wasm`, `@noble/curves`, `ethereum-cryptography`) are the same ones used by the CLI clients — the app bundles its own copies under `app/src/crypto/` (`bn254-crypto.ts`, `ghost-library.ts`, `ghostDeposit.ts`) so it runs entirely in the browser with no server-side crypto.
+
+### Architecture
+
+The app is a single-page wallet with four routes:
+
+| Route | Page | Description |
+|-------|------|-------------|
+| `/` | Dashboard | Balance card, token stats (valid/spent), activity feed with date range + type filters, deposit button |
+| `/deposit` | Deposit | Opens the deposit confirmation modal and redirects home |
+| `/redeem` | Redeem | Lists redeemable tokens (MintFulfilled), recipient picker from MetaMask accounts or manual address entry |
+| `/recovery` | Recovery | Blockchain scanner — re-derives token indices from seed and checks on-chain state |
+
+### Key components
+
+**`GhostMasterSeedProvider`** — React context that manages the vault master seed. On wallet connect, it prompts a one-time `personal_sign` in MetaMask to derive the seed deterministically (`keccak256(signature)`) — the seed lives only in RAM and is cleared on disconnect. For development, `VITE_GHOST_MASTER_SEED_HEX` bypasses the signature.
+
+**`DepositConfirmModal`** — The deposit flow: amount selection (fixed 0.01 AVAX denomination), real-time gas estimation via Fuji RPC, calldata construction using `buildGhostVaultDepositCalldata()` (derives secrets → blinds → ABI-encodes `deposit(address,uint256[2])`), and `eth_sendTransaction` through MetaMask. Includes pre-flight checks: `DENOMINATION()` view call, `depositPending()` collision check, and `eth_call` simulation before broadcasting.
+
+**`useWallet`** — Hook managing MetaMask connection, account switching (`wallet_requestPermissions`), chain enforcement (auto-switches to Fuji 43113), and balance polling.
+
+**`ghostVault.ts`** — On-chain scanner that fetches `DepositLocked` and `MintFulfilled` events via `eth_getLogs`, matches them against derived `depositId`s, checks `spentNullifiers`, and assembles the activity feed. Handles RPC rate limiting (burst queue with pause), block range chunking (Avalanche public RPC caps at ~2048 blocks per query), and `last accepted block` edge cases.
+
+### Seed derivation (wallet-based)
+
+When no `VITE_GHOST_MASTER_SEED_HEX` is set, the app derives the master seed from a MetaMask signature:
+
+1. User connects wallet → app prompts `personal_sign` with a deterministic message containing the account address and chain ID
+2. The 65-byte ECDSA signature is hashed: `masterSeed = keccak256(signature)`
+3. This seed is used for all `deriveTokenSecrets()` calls — same as the CLI clients
+4. The seed stays in React state (RAM only) — disconnecting the wallet clears it
+
+This means a user can recover their vault tokens on any device by connecting the same MetaMask account and signing the same derivation message.
+
+### On-chain interaction
+
+All RPC calls go through `fujiJsonRpc.ts` which routes to a Vite dev proxy (`/fuji-rpc` → Infura Fuji) during development, avoiding CORS issues. In production builds it calls the RPC URL directly (configurable via `VITE_FUJI_RPC_URL`).
+
+The deposit transaction is the only write operation — it uses MetaMask's `eth_sendTransaction` with pre-built calldata (same ABI encoding as the Python/TypeScript CLI clients). The app polls `eth_getTransactionReceipt` via HTTP RPC (not MetaMask) with a 30-second interval to avoid rate limits.
+
+### Contract address
+
+The deployed GhostVault on Fuji: [`0x0cd5b34e58c579105A3c080Bb3170d032a544352`](https://testnet.snowtrace.io/address/0x0cd5b34e58c579105A3c080Bb3170d032a544352)
+
+Override with `VITE_GHOST_VAULT_ADDRESS` in `.env`.
+
+### App environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VITE_GHOST_MASTER_SEED_HEX` | — | Dev shortcut: 64-char hex seed, bypasses `personal_sign` |
+| `VITE_FUJI_RPC_URL` | Infura Fuji | HTTPS JSON-RPC endpoint for reads |
+| `VITE_GHOST_VAULT_ADDRESS` | `0x0cd5…4352` | Deployed GhostVault contract |
+
+---
 
 
 ## Deployment Walkthrough
