@@ -110,6 +110,21 @@ def derive_bls_pubkey_summary(sk: int) -> str:
     return f"G2({x_real})"
 
 
+def derive_bls_pubkey_hex(sk: int) -> str:
+    """
+    Compute PK = sk·G2 and return 4 comma-separated hex uint256 values
+    in the EIP-197 limb order expected by the GhostVault constructor:
+        X_imag, X_real, Y_imag, Y_real
+    """
+    pk = bn128_multiply(G2, sk)
+    # py_ecc FQ2 coeffs order: [real, imag]
+    x_real = hex(pk[0].coeffs[0].n)
+    x_imag = hex(pk[0].coeffs[1].n)
+    y_real = hex(pk[1].coeffs[0].n)
+    y_imag = hex(pk[1].coeffs[1].n)
+    return f"{x_imag},{x_real},{y_imag},{y_real}"
+
+
 # ==============================================================================
 # ENV FILE CONSTRUCTION
 # ==============================================================================
@@ -207,6 +222,11 @@ MASTER_SEED={master_seed}
 # BLS scalar (integer) for the blind signing mint server.
 # The mint uses this to compute S' = sk · B on blinded deposit points.
 MINT_BLS_PRIVKEY={hex(bls_sk)}
+
+# BLS public key on G2 (4 uint256 values, EIP-197 limb order).
+# Used by the client to verify unblinded signatures locally before redeeming.
+# Derived deterministically from MINT_BLS_PRIVKEY — do not edit manually.
+MINT_BLS_PUBKEY={derive_bls_pubkey_hex(bls_sk)}
 {chain_section}
 # ── Scanning ──────────────────────────────────────────────────────────────────
 # Block number to start scanning for MintFulfilled events.

@@ -42,7 +42,6 @@ import json
 import logging
 import os
 import sys
-import json
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
@@ -60,13 +59,15 @@ from rich.text import Text
 from rich.theme import Theme
 from rich.traceback import install as install_rich_traceback
 from web3 import Web3
+from web3.exceptions import ContractCustomError, ContractLogicError
 
+from contract_errors import decode_contract_error
 from ghost_library import (
-    G1Point, Scalar,
+    G1Point, G2Point, Scalar,
     derive_token_secrets, blind_token, unblind_signature,
     generate_redemption_proof, serialize_g1, parse_g1,
     verify_bls_pairing, verify_ecdsa_mev_protection,
-    GhostError, InvalidPointError,
+    GhostError, InvalidPointError, _mul_g2,
 )
 
 load_dotenv()
@@ -297,6 +298,29 @@ class ClientConfig:
     contract_address: str            # may be empty in mock mode
     rpc_http_url:     str            # may be empty in mock mode
     scan_from_block:  int
+    mint_bls_pubkey:  G2Point | None = None  # parsed G2 point, None if not configured
+
+
+def _parse_mint_bls_pubkey(raw: str) -> G2Point | None:
+    """
+    Parse MINT_BLS_PUBKEY env var (4 comma-separated hex uint256 in EIP-197 order:
+    X_imag, X_real, Y_imag, Y_real) into a py_ecc G2Point.
+    Falls back to deriving from MINT_BLS_PRIVKEY if available.
+    """
+    from py_ecc.bn128 import FQ2, G2 as G2_gen
+
+    if raw:
+        parts = [p.strip() for p in raw.split(",")]
+        if len(parts) == 4:
+            x_imag, x_real, y_imag, y_real = (int(p, 16) for p in parts)
+            return G2Point((FQ2([x_real, x_imag]), FQ2([y_real, y_imag])))
+
+    sk_hex = os.getenv("MINT_BLS_PRIVKEY", "").strip() or os.getenv("MINT_BLS_PRIVKEY_INT", "").strip()
+    if sk_hex:
+        sk_int = int(sk_hex, 16) if sk_hex.startswith("0x") else int(sk_hex)
+        return _mul_g2(G2Point(G2_gen), Scalar(sk_int))
+
+    return None
 
 
 def load_config() -> ClientConfig:
@@ -351,6 +375,8 @@ def load_config() -> ClientConfig:
             ))
             raise typer.Exit(code=1)
 
+    pk = _parse_mint_bls_pubkey(os.getenv("MINT_BLS_PUBKEY", "").strip())
+
     return ClientConfig(
         master_seed=seed_hex.encode("utf-8"),
         wallet_address=wallet_addr,
@@ -358,6 +384,7 @@ def load_config() -> ClientConfig:
         contract_address=contract,
         rpc_http_url=rpc_url,
         scan_from_block=int(os.getenv("SCAN_FROM_BLOCK", "0")),
+        mint_bls_pubkey=pk,
     )
 
 
@@ -465,15 +492,19 @@ def cmd_deposit(config: ClientConfig, token_index: int) -> None:
         err("Insufficient balance: need at least 0.01 ETH")
         raise typer.Exit(code=1)
 
-    tx = contract.functions.deposit(
-        Web3.to_checksum_address(secrets.deposit_id),
-        [b_x, b_y],
-    ).build_transaction({
-        "from":     wallet,
-        "value":    DENOMINATION_WEI,
-        "nonce":    nonce,
-        "gasPrice": gas_price,
-    })
+    try:
+        tx = contract.functions.deposit(
+            Web3.to_checksum_address(secrets.deposit_id),
+            [b_x, b_y],
+        ).build_transaction({
+            "from":     wallet,
+            "value":    DENOMINATION_WEI,
+            "nonce":    nonce,
+            "gasPrice": gas_price,
+        })
+    except (ContractCustomError, ContractLogicError) as exc:
+        err(f"Contract reverted: {decode_contract_error(exc)}")
+        raise typer.Exit(code=1) from exc
 
     if is_debug():
         kv_hex("Calldata", tx["data"][:80] + "…")
@@ -578,25 +609,51 @@ def cmd_scan(
     recovered = 0
 
     for idx in scan_indices:
+        existing = state.tokens.get(idx)
         secrets    = derive_token_secrets(config.master_seed, idx)
         deposit_id = Web3.to_checksum_address(secrets.deposit_id)
 
+        # Ensure a record exists
+        if existing is None:
+            existing = TokenRecord(
+                index=idx,
+                spend_address=secrets.spend.address,
+                deposit_id=deposit_id,
+            )
+            state.tokens[idx] = existing
+
+        # Skip tokens that were never deposited — nothing to scan for
+        if existing.status == "FRESH":
+            continue
+
+        # Already redeemed — just show status
+        if existing.spent:
+            if not is_quiet():
+                console.print(Text.assemble(
+                    ("\n  Token ", "muted"), (str(idx), "num"),
+                    ("  ·  ", "muted"), existing.status_styled,
+                ))
+            continue
+
+        # Already have unblinded signature — show cached status, skip re-processing
+        if existing.has_token:
+            if not is_quiet():
+                console.print(Text.assemble(
+                    ("\n  Token ", "muted"), (str(idx), "num"),
+                    ("  ·  ", "muted"), existing.status_styled,
+                    ("  (cached)", "muted"),
+                ))
+            continue
+
+        # AWAITING_MINT — deposited but no signature yet, check events
         if not is_quiet():
             console.print(Text.assemble(
-                ("\n  Token ", "muted"),
-                (str(idx), "num"),
-                ("  ·  spend=", "muted"),
-                (secrets.spend.address, "addr"),
+                ("\n  Token ", "muted"), (str(idx), "num"),
+                ("  ·  ", "muted"), existing.status_styled,
             ))
 
         if deposit_id not in fulfilled:
-            info(f"  No MintFulfilled for deposit ID {_short(deposit_id, 8, 6)}", muted=True)
-            if idx not in state.tokens:
-                state.tokens[idx] = TokenRecord(
-                    index=idx,
-                    spend_address=secrets.spend.address,
-                    deposit_id=deposit_id,
-                )
+            info(f"  No MintFulfilled yet for deposit ID {_short(deposit_id, 8, 6)}", muted=True)
             continue
 
         s_prime_x, s_prime_y = fulfilled[deposit_id]
@@ -613,24 +670,30 @@ def cmd_scan(
             kv_hex("  S.x (unblinded)", hex(s_x))
             kv_hex("  S.y (unblinded)", hex(s_y))
 
+        # Local BLS verification against mint public key
+        if config.mint_bls_pubkey is not None:
+            Y = blind_token(secrets.spend_address_bytes, secrets.r).Y
+            bls_ok = verify_bls_pairing(S, Y, config.mint_bls_pubkey)
+            if bls_ok:
+                ok("  BLS pairing verified locally ✓")
+            else:
+                err("  BLS pairing FAILED — signature does not match mint public key.")
+                err("  This token will be rejected on-chain. Check MINT_BLS_PUBKEY in .env.")
+        else:
+            info("  MINT_BLS_PUBKEY not configured — skipping local BLS check.", muted=True)
+
         # On-chain nullifier check
         nullifier_addr = Web3.to_checksum_address(secrets.spend.address)
         is_spent       = contract.functions.spentNullifiers(nullifier_addr).call()
-        kv("  Nullifier spent on-chain", str(is_spent))
 
-        rec = state.tokens.get(idx, TokenRecord(
-            index=idx,
-            spend_address=secrets.spend.address,
-            deposit_id=deposit_id,
-        ))
-        rec.s_unblinded_x = hex(s_x)
-        rec.s_unblinded_y = hex(s_y)
-        rec.spent         = is_spent
-        state.tokens[idx] = rec
+        existing.s_unblinded_x = hex(s_x)
+        existing.s_unblinded_y = hex(s_y)
+        existing.spent         = is_spent
         recovered += 1
 
-        status_text = "SPENT (already redeemed on-chain)" if is_spent else "READY_TO_REDEEM"
-        kv("  Status", status_text, style="success" if not is_spent else "muted")
+        console.print(Text.assemble(
+            ("  → ", "muted"), existing.status_styled,
+        ))
 
     state.last_scanned_block = latest_block
     state.save()
@@ -668,6 +731,21 @@ def cmd_redeem(
         err(f"Token {token_index} has no unblinded signature. Run {hint} first.")
         raise typer.Exit(code=1)
 
+    # Derive secrets early — needed for verbose output, BLS check, and step 2
+    secrets = derive_token_secrets(config.master_seed, token_index)
+
+    if is_verbose():
+        section("Intermediate Values", "🔬")
+        kv("Spend address (nullifier)", secrets.spend.address, style="addr")
+        kv("Deposit ID",               secrets.deposit_id, style="addr")
+        kv_hex("Blinding scalar r",     hex(secrets.r))
+        blinded = blind_token(secrets.spend_address_bytes, secrets.r)
+        kv_hex("Y.x (hash-to-curve)",   hex(blinded.Y[0].n))
+        kv_hex("Y.y (hash-to-curve)",   hex(blinded.Y[1].n))
+        kv_hex("B.x (blinded point)",   hex(blinded.B[0].n))
+        kv_hex("B.y (blinded point)",   hex(blinded.B[1].n))
+        console.print()
+
     # Step 1: load S
     section("Step 1 · Load Unblinded Signature", "🔓")
     s_x = int(rec.s_unblinded_x, 16)
@@ -675,11 +753,23 @@ def cmd_redeem(
     S   = parse_g1(s_x, s_y)
     kv_hex("S.x", hex(s_x))
     kv_hex("S.y", hex(s_y))
+
+    # Local BLS verification before attempting on-chain redeem
+    if config.mint_bls_pubkey is not None:
+        Y = blind_token(secrets.spend_address_bytes, secrets.r).Y
+        bls_ok = verify_bls_pairing(S, Y, config.mint_bls_pubkey)
+        if bls_ok:
+            ok("BLS pairing verified locally ✓")
+        else:
+            err("BLS pairing FAILED locally — this token will be rejected on-chain.")
+            err("Possible causes: wrong MINT_BLS_PUBKEY, corrupted signature, or mint key mismatch.")
+            raise typer.Exit(code=1)
+    else:
+        info("MINT_BLS_PUBKEY not configured — skipping local BLS check.", muted=True)
     console.print()
 
     # Step 2: derive spend key
     section("Step 2 · Derive Spend Key", "🔑")
-    secrets = derive_token_secrets(config.master_seed, token_index)
     kv("Spend address (nullifier)", secrets.spend.address, style="addr")
     kv("Deposit ID",               secrets.blind.address,  style="addr")
     info("The spend address is the nullifier — recorded as spent after redemption.", muted=True)
@@ -734,10 +824,35 @@ def cmd_redeem(
         address=Web3.to_checksum_address(config.contract_address),
         abi=GHOST_VAULT_ABI,
     )
+
+    # Read the mint's BLS public key from the contract
+    if is_verbose():
+        pk_vals = [contract.functions.pkMint(i).call() for i in range(4)]
+        kv("On-chain pkMint[0]", hex(pk_vals[0]), style="hash")
+        kv("On-chain pkMint[1]", hex(pk_vals[1]), style="hash")
+        kv("On-chain pkMint[2]", hex(pk_vals[2]), style="hash")
+        kv("On-chain pkMint[3]", hex(pk_vals[3]), style="hash")
+
+        # Cross-check against local MINT_BLS_PUBKEY if configured
+        if config.mint_bls_pubkey is not None:
+            pk = config.mint_bls_pubkey
+            local_vals = [pk[0].coeffs[1].n, pk[0].coeffs[0].n, pk[1].coeffs[1].n, pk[1].coeffs[0].n]
+            if local_vals == pk_vals:
+                ok("On-chain pkMint matches local MINT_BLS_PUBKEY ✓")
+            else:
+                err("On-chain pkMint does NOT match local MINT_BLS_PUBKEY!")
+                err("The contract was deployed with a different mint key than your .env.")
+                raise typer.Exit(code=1)
+        console.print()
+
     ZERO = "0x0000000000000000000000000000000000000000"
-    calldata = contract.functions.redeem(
-        recipient_checksum, spend_sig_bytes, [s_x, s_y],
-    ).build_transaction({"from": ZERO})["data"]
+    try:
+        calldata = contract.functions.redeem(
+            recipient_checksum, spend_sig_bytes, [s_x, s_y],
+        ).build_transaction({"from": ZERO})["data"]
+    except (ContractCustomError, ContractLogicError) as exc:
+        err(f"Contract reverted during simulation: {decode_contract_error(exc)}")
+        raise typer.Exit(code=1) from exc
 
     kv("Recipient",     recipient_checksum, style="addr")
     kv("S.x",          str(s_x), style="num")
@@ -793,11 +908,15 @@ def cmd_redeem(
         kv("Nonce",             str(nonce))
         kv("Gas price",         f"{Web3.from_wei(gas_price, 'gwei'):.2f} gwei")
 
-        tx = contract.functions.redeem(
-            recipient_checksum, spend_sig_bytes, [s_x, s_y],
-        ).build_transaction({
-            "from": wallet, "nonce": nonce, "gasPrice": gas_price,
-        })
+        try:
+            tx = contract.functions.redeem(
+                recipient_checksum, spend_sig_bytes, [s_x, s_y],
+            ).build_transaction({
+                "from": wallet, "nonce": nonce, "gasPrice": gas_price,
+            })
+        except (ContractCustomError, ContractLogicError) as exc:
+            err(f"Contract reverted during simulation: {decode_contract_error(exc)}")
+            raise typer.Exit(code=1) from exc
 
         signed  = w3.eth.account.sign_transaction(tx, private_key=config.wallet_key)
         tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
@@ -808,7 +927,6 @@ def cmd_redeem(
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
         if receipt["status"] != 1:
             err(f"Transaction REVERTED  tx={tx_hex}")
-            err("Possible causes: token already spent, invalid BLS pairing, bad ECDSA sig.")
             raise typer.Exit(code=1)
 
         kv("Confirmed block",  str(receipt["blockNumber"]))

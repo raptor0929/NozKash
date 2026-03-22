@@ -89,6 +89,7 @@
     "inputs": [
       {"name": "recipient", "type": "address", "internalType": "address"},
       {"name": "spendSignature", "type": "bytes", "internalType": "bytes"},
+      {"name": "nullifier", "type": "address", "internalType": "address"},
       {"name": "unblindedSignatureS", "type": "uint256[2]", "internalType": "uint256[2]"}
     ],
     "outputs": [],

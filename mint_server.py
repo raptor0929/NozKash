@@ -45,8 +45,10 @@ from rich.text import Text
 from rich.theme import Theme
 from rich.traceback import install as install_rich_traceback
 from web3 import AsyncWeb3, WebSocketProvider
+from web3.exceptions import ContractCustomError, ContractLogicError
 from web3.types import EventData
 
+from contract_errors import decode_contract_error
 from ghost_library import (
     GhostError,
     InvalidPointError,
@@ -590,14 +592,17 @@ class MintDaemon:
                 )
             )
 
-        tx = await contract.functions.announce(
-            deposit_id,
-            s_prime_coords,
-        ).build_transaction({
-            "from":     wallet,
-            "nonce":    nonce,
-            "gasPrice": gas_price,
-        })
+        try:
+            tx = await contract.functions.announce(
+                deposit_id,
+                s_prime_coords,
+            ).build_transaction({
+                "from":     wallet,
+                "nonce":    nonce,
+                "gasPrice": gas_price,
+            })
+        except (ContractCustomError, ContractLogicError) as exc:
+            raise Exception(f"announce() reverted: {decode_contract_error(exc)}") from exc
 
         signed  = w3.eth.account.sign_transaction(tx, private_key=self.config.wallet_key)
         tx_hash = await w3.eth.send_raw_transaction(signed.raw_transaction)
