@@ -42,6 +42,7 @@ import json
 import logging
 import os
 import sys
+import json
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
@@ -362,52 +363,8 @@ def load_config() -> ClientConfig:
 
 # ── Contract ABI ───────────────────────────────────────────────────────────────
 
-GHOST_VAULT_ABI = [
-    {
-        "name": "DepositLocked",
-        "type": "event",
-        "inputs": [
-            {"name": "depositId", "type": "address",    "indexed": True},
-            {"name": "B",         "type": "uint256[2]", "indexed": False},
-        ],
-    },
-    {
-        "name": "MintFulfilled",
-        "type": "event",
-        "inputs": [
-            {"name": "depositId",        "type": "address",    "indexed": True},
-            {"name": "blindedSignature", "type": "uint256[2]", "indexed": False},
-        ],
-    },
-    {
-        "name": "deposit",
-        "type": "function",
-        "stateMutability": "payable",
-        "inputs": [
-            {"name": "blindedPointB", "type": "uint256[2]"},
-            {"name": "depositId",     "type": "address"},
-        ],
-        "outputs": [],
-    },
-    {
-        "name": "redeem",
-        "type": "function",
-        "stateMutability": "nonpayable",
-        "inputs": [
-            {"name": "recipient",           "type": "address"},
-            {"name": "spendSignature",      "type": "bytes"},
-            {"name": "unblindedSignatureS", "type": "uint256[2]"},
-        ],
-        "outputs": [],
-    },
-    {
-        "name": "spentNullifiers",
-        "type": "function",
-        "stateMutability": "view",
-        "inputs": [{"name": "", "type": "address"}],
-        "outputs": [{"name": "", "type": "bool"}],
-    },
-]
+_ABI_PATH = Path(__file__).resolve().parent / "ghost_vault_abi.json"
+GHOST_VAULT_ABI = json.loads(_ABI_PATH.read_text())
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -509,8 +466,8 @@ def cmd_deposit(config: ClientConfig, token_index: int) -> None:
         raise typer.Exit(code=1)
 
     tx = contract.functions.deposit(
-        [b_x, b_y],
         Web3.to_checksum_address(secrets.deposit_id),
+        [b_x, b_y],
     ).build_transaction({
         "from":     wallet,
         "value":    DENOMINATION_WEI,

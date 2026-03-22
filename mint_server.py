@@ -22,9 +22,11 @@ Usage:
 """
 
 import asyncio
+import json
 import logging
 import os
 import sys
+from pathlib import Path
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -458,34 +460,8 @@ def load_config(verbosity: Verbosity) -> MintConfig:
 
 # ── Contract ABI ──────────────────────────────────────────────────────────────
 
-GHOST_VAULT_ABI = [
-    {
-        "name": "DepositLocked",
-        "type": "event",
-        "inputs": [
-            {"name": "depositId", "type": "address",    "indexed": True},
-            {"name": "B",         "type": "uint256[2]", "indexed": False},
-        ],
-    },
-    {
-        "name": "MintFulfilled",
-        "type": "event",
-        "inputs": [
-            {"name": "depositId",        "type": "address",    "indexed": True},
-            {"name": "blindedSignature", "type": "uint256[2]", "indexed": False},
-        ],
-    },
-    {
-        "name": "announce",
-        "type": "function",
-        "stateMutability": "nonpayable",
-        "inputs": [
-            {"name": "depositId",        "type": "address"},
-            {"name": "blindedSignature", "type": "uint256[2]"},
-        ],
-        "outputs": [],
-    },
-]
+_ABI_PATH = Path(__file__).resolve().parent / "ghost_vault_abi.json"
+GHOST_VAULT_ABI = json.loads(_ABI_PATH.read_text())
 
 
 # ── Signing logic ─────────────────────────────────────────────────────────────
