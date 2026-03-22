@@ -1,0 +1,61 @@
+{
+  "DERIVATION_SPEC": {
+    "base": "keccak256(concat(master_seed_32bytes, token_index_as_uint32_le))",
+    "spend_priv": "keccak256(concat(utf8_bytes('spend'), base))",
+    "spend_addr": "Ethereum address from secp256k1: pubkey = spend_priv * G; addr = last20(keccak256(uncompressed_pubkey_without_0x04))",
+    "blinding_r": "r = uint256(keccak256(concat(utf8_bytes('blind'), base))) mod bn254_curve_order_q",
+    "note": "Same `base` for both spend_priv and blinding_r. Index must be 4-byte little-endian everywhere."
+  },
+  "MASTER_SEED": "2b8c5855536fdf6354d78377fc1810b8c850cea4fdecd12478f31dd0f04e6671",
+  "TOKEN_INDEX": 42,
+  "MINT_BLS_PRIVKEY_INT": 17087468199840458255777380070714339658210908587906447159169398321837385710467,
+  "PK_MINT": {
+    "X_real": "28fa1d49a2f593daf05e352c3035655acd4f36791611acb059fd0693a9182996",
+    "X_imag": "20151b545373b39ec147c998167e72c2284ee11e3b82e5f539c7361b9aaa7c13",
+    "Y_real": "cb8535c4e3eb14c98e64c98c7d2381ba1d6da0f1850dd2685eda5a40e48615d",
+    "Y_imag": "1eb565ef231d53a5fb13481bece8b71ef7fbdba14f277bb40459b69d180b517"
+  },
+  "SPEND_ADDRESS": "0x9355eb29da61d3a94343bf76e6458b6032c8c2e6",
+  "BLINDING_R": 9975352312114225588461889601612248069121371598217675252585165987882766246602,
+  "Y_HASH_TO_CURVE": {
+    "X": "1c6bb1f2196db102951c52ac7a37fc669bee684e589b759704cbb2669bcf3b8b",
+    "Y": "2cec5ea37b7af3714b49bab8e5e481fce4566e0103b0d018fca50480daff2341"
+  },
+  "B_BLINDED": {
+    "X": "2199699490514eba0a2b2d86646b9f5301d0ad7b12315169b880cb4b10be8257",
+    "Y": "d52d3a55b22f9e020e437e40f54ce93a6bc42b67706b1220022b23bd16abb11"
+  },
+  "S_PRIME": {
+    "X": "29d627ce6e5061ed7f2a25ee5d110facceddf1c774b44e361d5a670f4f92eab5",
+    "Y": "63f2b652f68c359e79c57ffc1ae330955dc8c84d7e19c4c48aef9349b6c2cc4"
+  },
+  "S_UNBLINDED": {
+    "X": "937017581b5a126f39c4fd65a21331b25af3e39dd8c22fb938f3f9d092e7f3b",
+    "Y": "1173c27673d294a2f4a7d4c79f36873a60f7c285af31b62d9c2f2daa090f2718"
+  },
+  "REDEMPTION": {
+    "DESTINATION": "0x89205A3A3b2A69De6Dbf7f01ED13B2108B2c43e7",
+    "PAYLOAD_UTF8": "Pay to: 0x89205A3A3b2A69De6Dbf7f01ED13B2108B2c43e7",
+    "MSG_HASH": "9bdf38bf81e68f396be18ec82cd3f879e4ab09c5f488839a647283a416a9ce86",
+    "V": 28,
+    "R": "503ecc985d24d99831584ce93ec5f5d7bc736cdb9206c2b557a6da7954f24455",
+    "S": "6fed309fa6b4b149a87ffd21642dfd949aac004fc40be24a02ce949980c36b4c"
+  },
+  "REDEEM_INTEGRATION": {
+    "COMMENT": "Anvil account #0 + blsDomain=0 + mint sk from MINT_BLS_PRIVKEY_INT; matches Solidity abi.encodePacked('Pay to: ', recipient) ECDSA",
+    "BLS_DOMAIN": "0000000000000000000000000000000000000000000000000000000000000000",
+    "SPEND_PRIVATE_KEY": "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+    "SPEND_ADDRESS": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    "RECIPIENT": "0x89205A3A3b2A69De6Dbf7f01ED13B2108B2c43e7",
+    "MSG_HASH": "07224f98bfda697d0b57d3b46ef4e68ea1dc7e47a0034dbadbdcb84ec55e7d90",
+    "Y_FROM_H2C": {
+      "X": "2dfdfd8312a3c1e84ea10313e3e73b3619c4f1664a34e32bcfacd93d70984356",
+      "Y": "ad2b66daecf3bb922e0846a450b2d2f659d203b2958b60512deb8a1fc811ce3"
+    },
+    "S_UNBLINDED_FOR_H2C": {
+      "X": "2f1decf4f4d6e20478f3928bc5b0dae54a8c9ce6f955f17f14fb749c1f98fbc",
+      "Y": "2967ecd8fcb5fd426a204f758f2d67dabe040133701b7110188d9b865e1f35d2"
+    },
+    "SPEND_SIGNATURE_HEX": "943ab4cd1f4bbeebf8e04065e18e55a949945aaa0a97e267a5b6be8b267469384c20f303fd7e7a9325bb7418806cd2e2e0dc94d48c47b7802fd0ce2cdc7b0e9b1b"
+  }
+}
