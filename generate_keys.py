@@ -5,17 +5,22 @@ Generates all secrets and configuration needed to run the Ghost-Tip client,
 mint, and flow scripts. Writes a complete .env file with:
 
     ── Secrets (generated fresh) ──
-    • MASTER_SEED           HD-wallet-style master seed for token derivation
-    • MINT_BLS_PRIVKEY_INT  BLS scalar for the blind signing mint
+    • MASTER_SEED            HD-wallet-style master seed for token derivation
+    • MINT_BLS_PRIVKEY       BLS scalar (0x hex) for the blind signing mint
 
-    ── Wallet (generated fresh) ──
-    • WALLET_ADDRESS         Ethereum address for deposits (funded with Sepolia ETH)
-    • WALLET_KEY             Private key for WALLET_ADDRESS
+    ── Deposit Wallet (--with-wallet) ──
+    • WALLET_ADDRESS          Ethereum address for deposits (funded with Sepolia ETH)
+    • WALLET_KEY              Private key for WALLET_ADDRESS
 
-    ── Network (defaults) ──
-    • RPC_HTTP_URL           Sepolia JSON-RPC endpoint (Infura, free tier)
-    • CONTRACT_ADDRESS       GhostVault contract address (placeholder until deployed)
-    • SCAN_FROM_BLOCK        Block to start scanning for events
+    ── Mint Wallet (--with-mint-wallet) ──
+    • MINT_WALLET_ADDRESS     Ethereum address that pays gas for announce() calls
+    • MINT_WALLET_KEY         Private key for MINT_WALLET_ADDRESS
+
+    ── Network (passed via flags or edited later) ──
+    • RPC_HTTP_URL            Sepolia JSON-RPC endpoint (client)
+    • RPC_WS_URL              Sepolia WebSocket endpoint (mint server)
+    • CONTRACT_ADDRESS        GhostVault contract address
+    • SCAN_FROM_BLOCK         Block to start scanning for events
 
 Safety:
     • Will NOT overwrite an existing .env file unless --force is passed.
@@ -25,8 +30,8 @@ Safety:
 Usage:
     uv run generate_keys.py              # generate .env (fails if exists)
     uv run generate_keys.py --force      # overwrite existing .env
-    uv run generate_keys.py --mock-only  # minimal config for mock mode only
     uv run generate_keys.py --print      # print what would be written, don't write
+    uv run generate_keys.py --with-wallet --with-mint-wallet  # generate both keypairs
 """
 
 import os
@@ -114,7 +119,10 @@ def build_env_content(
     bls_sk: int,
     wallet_address: str = "",
     wallet_key: str = "",
+    mint_wallet_address: str = "",
+    mint_wallet_key: str = "",
     rpc_url: str = "",
+    rpc_ws_url: str = "",
     contract_address: str = "",
     scan_from_block: str = "0",
 ) -> str:
@@ -131,12 +139,28 @@ WALLET_ADDRESS={wallet_address}
 WALLET_KEY={wallet_key}
 """
 
+    if mint_wallet_address and mint_wallet_key:
+        chain_section += f"""
+# ── Mint Wallet ───────────────────────────────────────────────────────────────
+# Ethereum keypair for the mint server (pays gas for announce() calls).
+# Fund this address with Sepolia ETH before starting the mint daemon.
+MINT_WALLET_ADDRESS={mint_wallet_address}
+MINT_WALLET_KEY={mint_wallet_key}
+"""
+
     if rpc_url:
         chain_section += f"""
-# ── Network ───────────────────────────────────────────────────────────────────
-# Sepolia JSON-RPC endpoint. Replace with your Infura/Alchemy project URL.
+# ── Network (HTTP) ────────────────────────────────────────────────────────────
+# Sepolia JSON-RPC endpoint for the CLI wallet.
 # Free tier: https://app.infura.io → create project → copy Sepolia endpoint.
 RPC_HTTP_URL={rpc_url}
+"""
+
+    if rpc_ws_url:
+        chain_section += f"""
+# ── Network (WebSocket) ──────────────────────────────────────────────────────
+# Sepolia WebSocket endpoint for the mint server event listener.
+RPC_WS_URL={rpc_ws_url}
 """
 
     if contract_address:
@@ -156,7 +180,10 @@ CONTRACT_ADDRESS={contract_address}
 # Uncomment and fill in when ready to go on-chain:
 # WALLET_ADDRESS=0xYourAddress
 # WALLET_KEY=0xYourPrivateKey
+# MINT_WALLET_ADDRESS=0xMintAddress
+# MINT_WALLET_KEY=0xMintPrivateKey
 # RPC_HTTP_URL=https://sepolia.infura.io/v3/YOUR_PROJECT_ID
+# RPC_WS_URL=wss://sepolia.infura.io/ws/v3/YOUR_PROJECT_ID
 # CONTRACT_ADDRESS=0xDeployedContractAddress
 """
 
@@ -167,7 +194,7 @@ CONTRACT_ADDRESS={contract_address}
 #
 # ⚠️  This file contains SECRET KEYS. Do not commit to version control.
 #
-# Mock mode (offline):  only MASTER_SEED + MINT_BLS_PRIVKEY_INT are needed.
+# Mock mode (offline):  only MASTER_SEED + MINT_BLS_PRIVKEY are needed.
 # Chain mode (Sepolia): all settings below must be filled in.
 # ==============================================================================
 
@@ -179,7 +206,7 @@ MASTER_SEED={master_seed}
 # ── Mint BLS Key ──────────────────────────────────────────────────────────────
 # BLS scalar (integer) for the blind signing mint server.
 # The mint uses this to compute S' = sk · B on blinded deposit points.
-MINT_BLS_PRIVKEY_INT={hex(bls_sk)}
+MINT_BLS_PRIVKEY={hex(bls_sk)}
 {chain_section}
 # ── Scanning ──────────────────────────────────────────────────────────────────
 # Block number to start scanning for MintFulfilled events.
@@ -215,9 +242,17 @@ def main(
         "--with-wallet", "-w",
         help="Also generate an Ethereum deposit wallet keypair.",
     )] = False,
+    with_mint_wallet: Annotated[bool, typer.Option(
+        "--with-mint-wallet",
+        help="Also generate an Ethereum keypair for the mint server (announce() gas).",
+    )] = False,
     rpc_url: Annotated[Optional[str], typer.Option(
         "--rpc-url",
-        help="RPC URL to include (e.g. your Infura Sepolia endpoint).",
+        help="HTTP RPC URL for the CLI wallet (e.g. your Infura Sepolia endpoint).",
+    )] = None,
+    rpc_ws_url: Annotated[Optional[str], typer.Option(
+        "--rpc-ws-url",
+        help="WebSocket RPC URL for the mint server (e.g. wss://sepolia.infura.io/ws/v3/...).",
     )] = None,
     contract: Annotated[Optional[str], typer.Option(
         "--contract",
@@ -232,10 +267,11 @@ def main(
     Generate keys and write a .env file.
 
     By default, generates only what's needed for mock mode (offline testing):
-    MASTER_SEED and MINT_BLS_PRIVKEY_INT.
+    MASTER_SEED and MINT_BLS_PRIVKEY.
 
-    Use --with-wallet to also generate a deposit wallet keypair, and
-    --rpc-url / --contract to include chain settings.
+    Use --with-wallet to also generate a deposit wallet keypair,
+    --with-mint-wallet to generate a mint server keypair, and
+    --rpc-url / --rpc-ws-url / --contract to include chain settings.
     """
     console.print(Panel(
         Text.assemble(("🔑  ", ""), ("GHOST-TIP KEY GENERATOR", "banner"), ("  🔑", "")),
@@ -272,8 +308,9 @@ def main(
     ))
 
     bls_sk = generate_bls_scalar()
+    bls_sk_hex = hex(bls_sk)
     console.print(Text.assemble(
-        ("  MINT_BLS_PRIVKEY   ", "label"), (str(bls_sk)[:20] + "…", "hash"),
+        ("  MINT_BLS_PRIVKEY   ", "label"), (bls_sk_hex[:20] + "…" + bls_sk_hex[-8:], "hash"),
     ))
 
     pk_summary = derive_bls_pubkey_summary(bls_sk)
@@ -298,13 +335,32 @@ def main(
         ))
         console.print()
 
+    # ── Optional: mint wallet ─────────────────────────────────────────────
+    mint_wallet_address = ""
+    mint_wallet_key = ""
+
+    if with_mint_wallet:
+        console.print(Rule("[step]Generating Mint Wallet[/step]", style="dim cyan"))
+        mint_wallet_address, mint_wallet_key = generate_eth_keypair()
+        console.print(Text.assemble(
+            ("  MINT_WALLET_ADDRESS ", "label"), (mint_wallet_address, "addr"),
+        ))
+        console.print(Text.assemble(
+            ("  MINT_WALLET_KEY     ", "label"), (mint_wallet_key[:10] + "…" + mint_wallet_key[-6:], "secret"),
+            ("  (keep secret!)", "muted"),
+        ))
+        console.print()
+
     # ── Build .env content ────────────────────────────────────────────────
     env_content = build_env_content(
         master_seed=master_seed,
         bls_sk=bls_sk,
         wallet_address=wallet_address,
         wallet_key=wallet_key,
+        mint_wallet_address=mint_wallet_address,
+        mint_wallet_key=mint_wallet_key,
         rpc_url=rpc_url or "",
+        rpc_ws_url=rpc_ws_url or "",
         contract_address=contract or "",
         scan_from_block=scan_from or "0",
     )
@@ -352,10 +408,26 @@ def main(
             ("     • Fund ", "muted"), (wallet_address, "addr"),
             (" with Sepolia ETH", "muted"),
         ))
-    console.print(Text(
-        "     • Edit .env → set RPC_HTTP_URL to your Infura/Alchemy endpoint",
-        style="muted",
-    ))
+    if not with_mint_wallet:
+        console.print(Text(
+            "     • Re-run with --with-mint-wallet to generate a mint server keypair",
+            style="muted",
+        ))
+    else:
+        console.print(Text.assemble(
+            ("     • Fund ", "muted"), (mint_wallet_address, "addr"),
+            (" with Sepolia ETH (mint gas)", "muted"),
+        ))
+    if not rpc_url:
+        console.print(Text(
+            "     • Edit .env → set RPC_HTTP_URL to your Infura/Alchemy endpoint",
+            style="muted",
+        ))
+    if not rpc_ws_url:
+        console.print(Text(
+            "     • Edit .env → set RPC_WS_URL to your WebSocket endpoint (for mint server)",
+            style="muted",
+        ))
     console.print(Text(
         "     • Edit .env → set CONTRACT_ADDRESS after deploying GhostVault",
         style="muted",
