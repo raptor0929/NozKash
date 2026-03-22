@@ -13,7 +13,7 @@ const SHORT = [
   'DEC',
 ] as const
 
-/** ISO `YYYY-MM-DD` → `19 MAR` (sin transformar mayúsculas; el CSS aplica uppercase). */
+/** ISO `YYYY-MM-DD` → `19 MAR` (case as returned; CSS applies uppercase). */
 export function formatIsoToPillDay(iso: string): string {
   const parts = iso.split('-')
   if (parts.length !== 3) return ''

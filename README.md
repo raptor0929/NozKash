@@ -13,7 +13,10 @@ npm run dev
 
 ## GitHub / hackathon
 
+Identidad sugerida para los commits:
 
+- **Nombre:** Simonethg  
+- **Email:** simonethfernandez@gmail.com  
 
 **Subir el proyecto e integrar al equipo (SSH, invitar compañeros, clone, `npm install`):**  
 → **[docs/HACKATHON_EQUIPO.md](docs/HACKATHON_EQUIPO.md)**

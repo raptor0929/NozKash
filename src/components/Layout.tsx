@@ -6,7 +6,7 @@ import { EgcNavbarLogo } from './eghost/EgcNavbarLogo'
 import { SplashScreen } from './eghost/SplashScreen'
 import { usePrivacy } from '../context/usePrivacy'
 import { useWallet } from '../hooks/useWallet'
-import { getEthereum, weiHexToEthLabel } from '../lib/ethereum'
+import { getEthereum, weiHexToNativeLabel } from '../lib/ethereum'
 import type { LayoutOutletContext } from '../layoutOutletContext'
 
 const AVATAR_PALETTE = ['#3D0F18', '#1A1A3D', '#003D2A', '#4B0082'] as const
@@ -49,19 +49,22 @@ export function Layout() {
   const [depositModalOpen, setDepositModalOpen] = useState(false)
   const [toast, setToast] = useState<{
     msg: string
-    type: 'success' | 'error'
+    type: 'success' | 'error' | 'info'
     show: boolean
   } | null>(null)
 
   const pillRef = useRef<HTMLDivElement | null>(null)
   const dropRef = useRef<HTMLDivElement | null>(null)
 
-  const showToast = useCallback((msg: string, type: 'success' | 'error' = 'success') => {
-    setToast({ msg, type, show: true })
-    window.setTimeout(() => {
-      setToast((t) => (t ? { ...t, show: false } : null))
-    }, 2800)
-  }, [])
+  const showToast = useCallback(
+    (msg: string, type: 'success' | 'error' | 'info' = 'success') => {
+      setToast({ msg, type, show: true })
+      window.setTimeout(() => {
+        setToast((t) => (t ? { ...t, show: false } : null))
+      }, 3200)
+    },
+    []
+  )
 
   const openDepositModal = useCallback(() => setDepositModalOpen(true), [])
 
@@ -77,7 +80,7 @@ export function Layout() {
             method: 'eth_getBalance',
             params: [addr, 'latest'],
           })) as string
-          next[addr] = weiHexToEthLabel(hex, 4)
+          next[addr] = weiHexToNativeLabel(hex, 'AVAX', 4)
         } catch {
           next[addr] = '—'
         }
@@ -155,7 +158,7 @@ export function Layout() {
               className="eye-btn"
               style={eyeBorderStyle}
               onClick={togglePrivacy}
-              aria-label={privacyOn ? 'Mostrar montos' : 'Ocultar montos'}
+              aria-label={privacyOn ? 'Show amounts' : 'Hide amounts'}
             >
               {privacyOn ? (
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
@@ -344,7 +347,7 @@ export function Layout() {
               setDropdownOpen(false)
               const ok = await openMetaMaskAccountPicker()
               if (ok) {
-                showToast('Cuentas actualizadas desde MetaMask', 'success')
+                showToast('Accounts updated from MetaMask', 'success')
               }
             }}
             onKeyDown={async (e) => {
@@ -352,7 +355,7 @@ export function Layout() {
                 setDropdownOpen(false)
                 const ok = await openMetaMaskAccountPicker()
                 if (ok) {
-                  showToast('Cuentas actualizadas desde MetaMask', 'success')
+                  showToast('Accounts updated from MetaMask', 'success')
                 }
               }
             }}

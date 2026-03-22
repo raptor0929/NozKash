@@ -25,7 +25,7 @@
 /* SPLASH */
 #splash{position:absolute;inset:0;background:#0F0F0F;z-index:500;display:flex;align-items:center;justify-content:center;transition:opacity .5s}
 #splash.hide{opacity:0;pointer-events:none}
-#splash svg{width:100%;height:100%}
+#splash svg,#splash img{width:100%;height:100%;object-fit:cover;display:block}
 
 /* NAVBAR */
 .navbar{padding:10px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);gap:8px;min-height:58px}
@@ -351,12 +351,17 @@
 .info-row:last-child{border-bottom:none}
 .info-key{color:var(--text2)}
 .info-val{color:var(--text);font-family:var(--mono);font-size:12px}
-.amount-display{background:var(--surface3);border:1px solid var(--border);border-radius:12px;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.amount-display{background:var(--surface3);border:1px solid var(--border);border-radius:12px;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
 .amount-display-val{font-family:var(--mono);font-size:22px;font-weight:700;color:#FFFFFF}
-.amount-display-cur{font-family:var(--mono);font-size:14px;color:var(--text3)}
+.amount-display-input{flex:1;min-width:0;background:transparent;border:none;outline:none;padding:0;margin:0;font-family:var(--mono);font-size:22px;font-weight:700;color:#FFFFFF}
+.amount-display-input::placeholder{color:var(--text3);opacity:.45}
+.amount-display-input:focus{color:#FFFFFF}
+.amount-display-cur{font-family:var(--mono);font-size:14px;color:var(--text3);flex-shrink:0}
+.deposit-preset-row{display:flex;flex-direction:row;flex-wrap:nowrap;gap:8px;margin-bottom:16px}
+.deposit-preset-row .preset-btn{flex:1;min-width:0;padding:10px 2px}
 .preset-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px}
 .preset-btn{background:var(--surface3);border:1px solid var(--border);border-radius:10px;padding:10px 4px;font-family:var(--mono);font-size:11px;color:var(--text2);cursor:pointer;transition:.2s;text-align:center}
-.preset-btn:hover,.preset-btn.active{background:var(--red-dim);border-color:rgba(255,59,92,.5);color:var(--red2)}
+.preset-btn:hover,.preset-btn.active{background:var(--history-accent-dim);border-color:var(--history-accent-border);color:var(--history-accent)}
 .deposit-info{background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:12px;margin-bottom:18px}
 .mm-icon{width:56px;height:56px;border-radius:16px;background:var(--surface2);border:1px solid var(--border2);display:flex;align-items:center;justify-content:center;margin:0 auto 14px}
 .mm-title{font-family:var(--mono);font-size:15px;font-weight:700;color:var(--text);text-align:center;margin-bottom:6px}
@@ -399,6 +404,7 @@
 .toast.show{transform:translateX(-50%) translateY(0)}
 .toast.success{border-color:rgba(0,229,160,.3);color:var(--green)}
 .toast.error{border-color:rgba(255,59,92,.3);color:var(--red2)}
+.toast.info{border-color:rgba(88,166,255,.35);color:var(--history-accent);white-space:normal;max-width:min(340px,calc(100vw - 32px));text-align:center;line-height:1.35}
 button.eye-btn,button.wallet-pill{font:inherit;color:inherit}
 button.add-deposit-btn,button.btn-primary,button.btn-secondary,button.btn-full{font:inherit}
 .flow-field{width:100%;box-sizing:border-box}

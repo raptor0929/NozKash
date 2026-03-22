@@ -1,6 +1,6 @@
 import { useId } from 'react'
 
-/** Wordmark NozKash (animación en `eghostcash.css`, clases `nzkm-*`). */
+/** NozKash wordmark (animation in `eghostcash.css`, `nzkm-*` classes). */
 export function EgcNavbarLogo() {
   const clipId = `nzkm-clip-${useId().replace(/:/g, '')}`
 

@@ -1,4 +1,4 @@
-/** Fantasma decorativo (barra inferior); animación en `eghostcash.css` (clases `bn-ghost-*`). */
+/** Decorative ghost (bottom bar); animation in `eghostcash.css` (`bn-ghost-*` classes). */
 export function BottomGhostDecor() {
   return (
     <div className="bottom-nav" aria-hidden="true">

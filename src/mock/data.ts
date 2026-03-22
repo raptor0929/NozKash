@@ -11,18 +11,18 @@ export const MOCK_CRYPTO = {
   unblindedSigY:
     '0x1173c27673d294a2f4a7d4c79f36873a60f7c285af31b62d9c2f2daa090f2718',
   denominationEth: 0.01,
-  denominationLabel: '0.01 ETH',
-  network: 'Sepolia',
+  denominationLabel: '0.01 AVAX',
+  network: 'Fuji',
 } as const
 
 export type ActivityKind = 'Deposit' | 'Redeem' | 'Pending'
 
-/** Home stats (fijas al cambiar cuenta; alineado con eghostcash_wallet_v1_4e.html). */
+/** Home stats (fixed when switching account; aligned with eghostcash_wallet_v1_4e.html). */
 export const MOCK_HOME_STATS = {
   validCount: 3,
-  validEth: '0.03 ETH',
+  validEth: '0.03 AVAX',
   spentCount: 2,
-  spentEth: '0.02 ETH',
+  spentEth: '0.02 AVAX',
 } as const
 
 export interface MockRedeemToken {
@@ -45,22 +45,22 @@ export interface MockTx {
   counterparty: string
   time: string
   txHash: string
-  /** ISO date YYYY-MM-DD para filtros. */
+  /** ISO date YYYY-MM-DD for filters. */
   dateIso: string
-  /** Título principal en lista agrupada. */
+  /** Primary title in grouped list. */
   historyLabel: string
-  /** Subtítulo (segunda línea). */
+  /** Subtitle (second line). */
   historySub: string
 }
 
 const net = MOCK_CRYPTO.network
 
-/** Paridad con `historyData` del HTML (fechas 2026). */
+/** Parity with `historyData` from the HTML mock (2026 dates). */
 export const MOCK_HISTORY: MockTx[] = [
   {
     id: 'tx-h1',
     type: 'Pending',
-    amount: '0.01 ETH',
+    amount: '0.01 AVAX',
     counterparty: '—',
     time: '2026-03-21',
     txHash: '—',
@@ -71,7 +71,7 @@ export const MOCK_HISTORY: MockTx[] = [
   {
     id: 'tx-h2',
     type: 'Deposit',
-    amount: '0.01 ETH',
+    amount: '0.01 AVAX',
     counterparty: MOCK_CRYPTO.spendAddress.slice(0, 10) + '…',
     time: '2026-03-21',
     txHash: '0xa1b2…',
@@ -82,7 +82,7 @@ export const MOCK_HISTORY: MockTx[] = [
   {
     id: 'tx-h3',
     type: 'Redeem',
-    amount: '0.01 ETH',
+    amount: '0.01 AVAX',
     counterparty: '0x71C7…9A2f',
     time: '2026-03-21',
     txHash: '0xf5e4…',
@@ -93,7 +93,7 @@ export const MOCK_HISTORY: MockTx[] = [
   {
     id: 'tx-h4',
     type: 'Deposit',
-    amount: '0.01 ETH',
+    amount: '0.01 AVAX',
     counterparty: MOCK_CRYPTO.spendAddress.slice(0, 10) + '…',
     time: '2026-03-20',
     txHash: '0x9c8b…',
@@ -104,7 +104,7 @@ export const MOCK_HISTORY: MockTx[] = [
   {
     id: 'tx-h5',
     type: 'Redeem',
-    amount: '0.01 ETH',
+    amount: '0.01 AVAX',
     counterparty: '0x71C7…9A2f',
     time: '2026-03-20',
     txHash: '0x2b1a…',
@@ -115,7 +115,7 @@ export const MOCK_HISTORY: MockTx[] = [
   {
     id: 'tx-h6',
     type: 'Deposit',
-    amount: '0.01 ETH',
+    amount: '0.01 AVAX',
     counterparty: MOCK_CRYPTO.spendAddress.slice(0, 10) + '…',
     time: '2026-03-19',
     txHash: '0x8e7c…',
@@ -126,7 +126,7 @@ export const MOCK_HISTORY: MockTx[] = [
   {
     id: 'tx-h7',
     type: 'Redeem',
-    amount: '0.01 ETH',
+    amount: '0.01 AVAX',
     counterparty: '0x71C7…9A2f',
     time: '2026-03-19',
     txHash: '0x4a3b…',
@@ -137,7 +137,7 @@ export const MOCK_HISTORY: MockTx[] = [
   {
     id: 'tx-h8',
     type: 'Deposit',
-    amount: '0.01 ETH',
+    amount: '0.01 AVAX',
     counterparty: MOCK_CRYPTO.spendAddress.slice(0, 10) + '…',
     time: '2026-03-17',
     txHash: '0x1d2e…',

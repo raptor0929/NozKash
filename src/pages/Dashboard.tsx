@@ -77,7 +77,7 @@ export function Dashboard() {
   const { network, homeBalanceMain, homeBalanceUsd } = useWallet()
   const { openDepositModal, showToast } =
     useOutletContext<LayoutOutletContext>()
-  const { signingId, signRedeem } = useRedeemSign(showToast)
+  const { signingId, redeemPhase, signRedeem } = useRedeemSign(showToast)
 
   const [activeFilter, setActiveFilter] =
     useState<HistoryFilterType>('all')
@@ -182,7 +182,7 @@ export function Dashboard() {
           </div>
           <div>
             <div className="add-deposit-label">Add deposit</div>
-            <div className="add-deposit-sub">Shield ETH · {network}</div>
+            <div className="add-deposit-sub">Shield AVAX · {network}</div>
           </div>
         </div>
         <span className="add-deposit-badge">+ MINT</span>
@@ -205,7 +205,7 @@ export function Dashboard() {
               className="home-filter-btn home-filter-btn--toolbar"
               aria-expanded={filterOpen}
               aria-haspopup="menu"
-              aria-label="Filtrar por tipo"
+              aria-label="Filter by type"
               onClick={() => setFilterOpen((o) => !o)}
             >
               <FilterFunnelIcon />
@@ -269,7 +269,11 @@ export function Dashboard() {
                           )
                         }
                       >
-                        {signingId === item.id ? 'Signing…' : 'Redeem'}
+                        {signingId === item.id
+                          ? redeemPhase === 'account'
+                            ? 'Cuenta…'
+                            : 'Firmando…'
+                          : 'Redeem'}
                       </button>
                     )}
                   </div>

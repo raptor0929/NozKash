@@ -32,7 +32,7 @@ export function runParityCheck(): boolean {
   console.log(`  Blinding r:    ${rOk ? '✅' : '❌'} Got: ${secrets.r}`);
 
   if (addressOk && rOk) {
-    console.log('✅ PARITY CHECK PASSED — crypto lista para usar');
+    console.log('✅ PARITY CHECK PASSED — crypto ready to use');
     return true;
   } else {
     console.error('❌ PARITY CHECK FAILED — NO avanzar hasta resolver esto');

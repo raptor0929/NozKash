@@ -67,7 +67,7 @@ export function DateRangePill({
         <button
           type="button"
           className="date-range-pill-clear"
-          aria-label="Limpiar fechas"
+          aria-label="Clear dates"
           onClick={onClear}
         >
           ×
@@ -80,7 +80,7 @@ export function DateRangePill({
         type="date"
         value={dateFrom}
         onChange={(e) => onDateFromChange(e.target.value)}
-        aria-label="Fecha desde"
+        aria-label="Date from"
       />
       <input
         ref={toRef}
@@ -89,7 +89,7 @@ export function DateRangePill({
         type="date"
         value={dateTo}
         onChange={(e) => onDateToChange(e.target.value)}
-        aria-label="Fecha hasta"
+        aria-label="Date to"
       />
     </div>
   )

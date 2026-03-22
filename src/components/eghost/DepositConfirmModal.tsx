@@ -1,31 +1,84 @@
 import { useEffect, useState } from 'react'
 import { useWallet } from '../../hooks/useWallet'
 import {
-  ensureSepolia,
-  estimateSimpleTransferGasEth,
+  ensureFuji,
+  estimateSimpleTransferGasNative,
   getEthereum,
+  parseEthAddressList,
   waitForTransactionReceipt,
 } from '../../lib/ethereum'
-import { MOCK_CRYPTO } from '../../mock/data'
+import { avaxDecimalStringToWeiHex } from '../../lib/avaxWei'
 
 const PLACEHOLDER_TO = '0x0000000000000000000000000000000000000001'
-const DEPOSIT_VALUE_WEI = '0x2386F26FC10000'
+
+/** Quick amounts; only `SUPPORTED_DEPOSIT_AVAX` is enabled until arbitrary amounts ship. */
+const DEPOSIT_PRESETS = ['0.001', '0.01', '0.1', '1'] as const
+
+const DEFAULT_AMOUNT = '0.01'
+const SUPPORTED_DEPOSIT_AVAX = '0.01'
+const SUPPORTED_DEPOSIT_WEI = 10n ** 16n // 0.01 * 10^18
+
+const NOT_SUPPORTED_YET_MSG = 'Not supported yet'
 
 type Props = {
   open: boolean
   onClose: () => void
-  onToast: (msg: string, type?: 'success' | 'error') => void
+  onToast: (msg: string, type?: 'success' | 'error' | 'info') => void
 }
 
-function usdApproxForDenomination(): string {
-  const usd = MOCK_CRYPTO.denominationEth * 2417
+/** Digits and at most one decimal point; max 18 fractional digits. */
+function sanitizeAvaxInput(raw: string): string {
+  let s = raw.replace(/[^\d.]/g, '')
+  const dot = s.indexOf('.')
+  if (dot !== -1) {
+    s =
+      s.slice(0, dot + 1) + s.slice(dot + 1).replace(/\./g, '')
+  }
+  const [w = '', f] = s.split('.')
+  const whole = w.slice(0, 24)
+  if (f === undefined) return whole
+  return `${whole}.${f.slice(0, 18)}`
+}
+
+/** Normalized string for `avaxDecimalStringToWeiHex` (must be > 0). */
+function finalizeAmountForTx(s: string): string | null {
+  let t = s.trim()
+  if (!t) return null
+  if (t === '.') return null
+  if (t.endsWith('.')) t = t.slice(0, -1)
+  if (t.startsWith('.')) t = `0${t}`
+  const n = Number(t)
+  if (!Number.isFinite(n) || n <= 0) return null
+  if (!/^\d+(\.\d+)?$/.test(t)) return null
+  return t
+}
+
+function usdApproxForAvax(amountStr: string): string {
+  const finalized = finalizeAmountForTx(amountStr)
+  if (!finalized) return '—'
+  const n = Number(finalized)
+  const usd = n * 2417
   return `≈ $${usd.toFixed(2)} USD`
 }
 
+/** Exact 0.01 AVAX in wei; any other value is blocked for now. */
+function isSupportedDepositAmount(finalized: string): boolean {
+  try {
+    return BigInt(avaxDecimalStringToWeiHex(finalized)) === SUPPORTED_DEPOSIT_WEI
+  } catch {
+    return false
+  }
+}
+
 export function DepositConfirmModal({ open, onClose, onToast }: Props) {
-  const { account, network } = useWallet()
+  const { network } = useWallet()
   const [gasLabel, setGasLabel] = useState('—')
   const [pending, setPending] = useState(false)
+  const [amountAvax, setAmountAvax] = useState<string>(DEFAULT_AMOUNT)
+
+  useEffect(() => {
+    if (open) setAmountAvax(DEFAULT_AMOUNT)
+  }, [open])
 
   useEffect(() => {
     if (!open) {
@@ -36,7 +89,7 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
     if (!eth) return
     let cancelled = false
     ;(async () => {
-      const g = await estimateSimpleTransferGasEth(eth)
+      const g = await estimateSimpleTransferGasNative(eth, 'AVAX')
       if (!cancelled) setGasLabel(g)
     })()
     return () => {
@@ -52,27 +105,87 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
     if (pending) return
     const ethereum = getEthereum()
     if (!ethereum) {
-      onToast('MetaMask no está instalado', 'error')
+      onToast('MetaMask is not installed', 'error')
+      return
+    }
+
+    const finalized = finalizeAmountForTx(amountAvax)
+    if (!finalized) {
+      onToast('Enter a valid amount greater than 0', 'error')
+      return
+    }
+
+    if (!isSupportedDepositAmount(finalized)) {
+      onToast(NOT_SUPPORTED_YET_MSG, 'error')
+      return
+    }
+
+    let valueHex: string
+    try {
+      valueHex = avaxDecimalStringToWeiHex(finalized)
+    } catch {
+      onToast('Invalid deposit amount', 'error')
       return
     }
 
     setPending(true)
     try {
-      let from = account
-      if (!from) {
-        const accs = (await ethereum.request({
-          method: 'eth_requestAccounts',
-        })) as string[]
-        from = accs[0] ?? null
-      }
-      if (!from) {
-        onToast('Conectá tu wallet para continuar', 'error')
+      const okChain = await ensureFuji(ethereum)
+      if (!okChain) {
+        onToast(
+          'You need Avalanche Fuji Testnet (43113) to deposit',
+          'error'
+        )
         return
       }
 
-      const okChain = await ensureSepolia(ethereum)
-      if (!okChain) {
-        onToast('Necesitás la red Sepolia para depositar', 'error')
+      onToast(
+        'Deposit · step 1/2: in MetaMask confirm which account to use (pick from the list and Accept)',
+        'info'
+      )
+
+      try {
+        await ethereum.request({
+          method: 'wallet_requestPermissions',
+          params: [{ eth_accounts: {} }],
+        })
+      } catch (permErr: unknown) {
+        const pe = permErr as { code?: number }
+        if (pe.code === 4001) {
+          onToast('Account selection cancelled in MetaMask', 'error')
+          return
+        }
+        /* Wallets without wallet_requestPermissions: fall through to requestAccounts */
+      }
+
+      let accs: string[]
+      try {
+        accs = parseEthAddressList(
+          await ethereum.request({ method: 'eth_requestAccounts' })
+        )
+      } catch {
+        onToast('Could not get MetaMask accounts', 'error')
+        return
+      }
+
+      if (accs.length === 0) {
+        onToast('No connected account in MetaMask', 'error')
+        return
+      }
+
+      await new Promise((r) => window.setTimeout(r, 300))
+
+      onToast(
+        'Deposit · step 2/2: confirm the transaction in MetaMask',
+        'info'
+      )
+
+      const fresh = parseEthAddressList(
+        await ethereum.request({ method: 'eth_accounts' })
+      )
+      const from = fresh[0] ?? accs[0]
+      if (!from) {
+        onToast('No account selected in MetaMask', 'error')
         return
       }
 
@@ -82,7 +195,7 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
           {
             from,
             to: PLACEHOLDER_TO,
-            value: DEPOSIT_VALUE_WEI,
+            value: valueHex,
             data: '0x',
           },
         ],
@@ -90,26 +203,23 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
 
       const receipt = await waitForTransactionReceipt(ethereum, hash)
       if (receipt.status === '0x0') {
-        onToast('La transacción falló o fue revertida', 'error')
+        onToast('Transaction failed or was reverted', 'error')
         return
       }
       onClose()
-      onToast(
-        `Depósito confirmado · ${MOCK_CRYPTO.denominationLabel}`,
-        'success'
-      )
+      onToast(`Deposit confirmed · ${finalized} AVAX`, 'success')
     } catch (err: unknown) {
       console.error('Deposit tx', err)
       const e = err as { code?: number; message?: string }
       if (e?.code === 4001) {
-        onToast('Transacción cancelada en MetaMask', 'error')
+        onToast('Transaction cancelled in MetaMask', 'error')
         return
       }
       const msg = typeof e?.message === 'string' ? e.message : ''
       if (/user rejected|denied|rejected/i.test(msg)) {
-        onToast('Transacción cancelada en MetaMask', 'error')
+        onToast('Transaction cancelled in MetaMask', 'error')
       } else {
-        onToast('No se pudo enviar la transacción', 'error')
+        onToast('Could not send the transaction', 'error')
       }
     } finally {
       setPending(false)
@@ -117,6 +227,9 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
   }
 
   if (!open) return null
+
+  const finalized = finalizeAmountForTx(amountAvax)
+  const amountLabel = finalized ? `${finalized} AVAX` : '—'
 
   return (
     <div
@@ -138,7 +251,7 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            marginBottom: 16,
+            marginBottom: 12,
           }}
         >
           <span
@@ -149,14 +262,14 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
               letterSpacing: '0.5px',
             }}
           >
-            CONFIRM DEPOSIT
+            ADD DEPOSIT
           </span>
           <button
             type="button"
             className="import-close"
             disabled={pending}
             onClick={close}
-            aria-label="Cerrar"
+            aria-label="Close"
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
               <path
@@ -170,7 +283,58 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
         </div>
 
         <p className="modal-sub-label" style={{ marginBottom: 14 }}>
-          Revisá el resumen y confirmá en MetaMask.
+          Select amount to shield on Avalanche
+        </p>
+
+        <div className="amount-display">
+          <input
+            type="text"
+            inputMode="decimal"
+            autoComplete="off"
+            spellCheck={false}
+            className="amount-display-input"
+            aria-label="Amount in AVAX"
+            placeholder="0.01"
+            disabled={pending}
+            value={amountAvax}
+            onChange={(e) => {
+              const next = sanitizeAvaxInput(e.target.value)
+              setAmountAvax(next)
+              const fin = finalizeAmountForTx(next)
+              if (fin !== null && !isSupportedDepositAmount(fin)) {
+                onToast(NOT_SUPPORTED_YET_MSG, 'error')
+              }
+            }}
+          />
+          <span className="amount-display-cur">AVAX</span>
+        </div>
+
+        <div className="deposit-preset-row">
+          {DEPOSIT_PRESETS.map((p) => (
+            <button
+              key={p}
+              type="button"
+              className={`preset-btn${amountAvax === p ? ' active' : ''}`}
+              disabled={pending}
+              onClick={() => {
+                if (p !== SUPPORTED_DEPOSIT_AVAX) {
+                  onToast(NOT_SUPPORTED_YET_MSG, 'error')
+                  return
+                }
+                setAmountAvax(p)
+              }}
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+
+        <p
+          className="modal-sub-label"
+          style={{ marginBottom: 12, marginTop: 4 }}
+        >
+          Two steps in MetaMask: choose your account, then confirm the
+          transaction.
         </p>
 
         <div className="deposit-info" style={{ marginBottom: 18 }}>
@@ -178,15 +342,18 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
             <span className="info-key">Amount</span>
             <span
               className="info-val"
-              style={{ fontFamily: 'var(--mono)', color: 'var(--green)' }}
+              style={{
+                fontFamily: 'var(--mono)',
+                color: 'var(--history-accent)',
+              }}
             >
-              {MOCK_CRYPTO.denominationLabel}
+              {amountLabel}
             </span>
           </div>
           <div className="info-row">
             <span className="info-key">≈ USD</span>
             <span className="info-val" style={{ fontFamily: 'var(--mono)' }}>
-              {usdApproxForDenomination()}
+              {usdApproxForAvax(amountAvax)}
             </span>
           </div>
           <div className="info-row">
@@ -202,10 +369,10 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
               style={{
                 fontFamily: 'var(--mono)',
                 color:
-                  network === 'Sepolia' ? 'var(--green)' : 'var(--yellow)',
+                  network === 'Fuji' ? 'var(--green)' : 'var(--yellow)',
               }}
             >
-              {network}
+              {network === 'Fuji' ? 'Avalanche · Fuji' : network}
             </span>
           </div>
           <div className="info-row">

@@ -1,9 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { getEthereum, weiHexToEthLabel } from '../lib/ethereum'
+import {
+  ensureFuji,
+  FUJI_CHAIN_ID,
+  getEthereum,
+  parseEthAddressList,
+  weiHexToNativeLabel,
+} from '../lib/ethereum'
 
-type NetworkLabel = 'Sepolia' | 'Wrong Network'
+type NetworkLabel = 'Fuji' | 'Wrong Network'
 
-const TARGET_CHAIN_ID = '0xaa36a7'
+const TARGET_CHAIN_ID = FUJI_CHAIN_ID
 
 type EthereumProvider = {
   request: (args: {
@@ -65,18 +71,18 @@ export function useWallet() {
 
   const homeBalanceMain = useMemo(() => {
     if (!balanceWeiHex) return null
-    return weiHexToEthLabel(balanceWeiHex, 4)
+    return weiHexToNativeLabel(balanceWeiHex, 'AVAX', 4)
   }, [balanceWeiHex])
 
   const homeBalanceUsd = useMemo(() => {
     if (!balanceWeiHex) return null
-    const eth = Number(BigInt(balanceWeiHex)) / 1e18
-    if (!Number.isFinite(eth)) return null
-    return `≈ $${(eth * 2417).toFixed(2)} USD`
+    const avax = Number(BigInt(balanceWeiHex)) / 1e18
+    if (!Number.isFinite(avax)) return null
+    return `≈ $${(avax * 2417).toFixed(2)} USD`
   }, [balanceWeiHex])
 
   const isConnected = useMemo(
-    () => account !== null && network === 'Sepolia',
+    () => account !== null && network === 'Fuji',
     [account, network]
   )
 
@@ -87,7 +93,7 @@ export function useWallet() {
     const chainId = normalizeChainId(
       await ethereum.request({ method: 'eth_chainId' })
     )
-    if (chainId === TARGET_CHAIN_ID) setNetwork('Sepolia')
+    if (chainId === TARGET_CHAIN_ID) setNetwork('Fuji')
     else setNetwork('Wrong Network')
   }, [])
 
@@ -119,7 +125,7 @@ export function useWallet() {
           return list[0]
         })
         const normalized = normalizeChainId(chainId)
-        setNetwork(normalized === TARGET_CHAIN_ID ? 'Sepolia' : 'Wrong Network')
+        setNetwork(normalized === TARGET_CHAIN_ID ? 'Fuji' : 'Wrong Network')
       } catch (err) {
         if (isCancelled) return
         console.error('Wallet init failed', err)
@@ -137,7 +143,7 @@ export function useWallet() {
     }
     const handleChainChanged = (newChainId: unknown) => {
       const normalized = normalizeChainId(newChainId)
-      setNetwork(normalized === TARGET_CHAIN_ID ? 'Sepolia' : 'Wrong Network')
+      setNetwork(normalized === TARGET_CHAIN_ID ? 'Fuji' : 'Wrong Network')
     }
 
     if (typeof ethereum?.on === 'function') {
@@ -157,7 +163,7 @@ export function useWallet() {
   const connectWallet = useCallback(async () => {
     const ethereum = getEthereumProvider()
     if (!ethereum) {
-      window.alert('MetaMask no está instalado.')
+      window.alert('MetaMask is not installed.')
       return
     }
 
@@ -196,33 +202,67 @@ export function useWallet() {
           params: [{ eth_accounts: {} }],
         })
       } catch {
-        /* MetaMask antiguo u otro proveedor: igual limpiamos la UI */
+        /* Older MetaMask or other provider: still clear the UI */
       }
     }
     setAccounts([])
     setAccount(null)
   }, [])
 
-  /** Abre MetaMask (`eth_requestAccounts`) para conectar más cuentas o revisar permisos. */
+  /**
+   * Same flow as Add deposit / Redeem: Fuji → `wallet_requestPermissions` (pick
+   * accounts in MetaMask) → `eth_requestAccounts` → active account from `eth_accounts`.
+   */
   const openMetaMaskAccountPicker = useCallback(async (): Promise<boolean> => {
-    const ethereum = getEthereumProvider()
+    const ethereum = getEthereum()
     if (!ethereum) {
-      window.alert('MetaMask no está instalado.')
+      window.alert('MetaMask is not installed.')
       return false
     }
     try {
-      const accs = parseAccounts(
-        await ethereum.request({ method: 'eth_requestAccounts' })
+      const okChain = await ensureFuji(ethereum)
+      if (!okChain) {
+        window.alert(
+          'Switch to Avalanche Fuji (43113) in MetaMask to change account.'
+        )
+        return false
+      }
+
+      try {
+        await ethereum.request({
+          method: 'wallet_requestPermissions',
+          params: [{ eth_accounts: {} }],
+        })
+      } catch (permErr: unknown) {
+        const pe = permErr as { code?: number }
+        if (pe.code === 4001) return false
+      }
+
+      let accs: string[]
+      try {
+        accs = parseEthAddressList(
+          await ethereum.request({ method: 'eth_requestAccounts' })
+        )
+      } catch {
+        return false
+      }
+
+      if (accs.length === 0) return false
+
+      await new Promise((r) => window.setTimeout(r, 300))
+
+      const fresh = parseEthAddressList(
+        await ethereum.request({ method: 'eth_accounts' })
       )
+      const active = fresh[0] ?? accs[0]
+      if (!active) return false
+
       setAccounts(accs)
-      setAccount((prev) => {
-        if (accs.length === 0) return null
-        if (prev && accs.includes(prev)) return prev
-        return accs[0]
-      })
+      setAccount(active)
       await refreshNetwork()
       return true
-    } catch {
+    } catch (err) {
+      console.error('openMetaMaskAccountPicker failed', err)
       return false
     }
   }, [refreshNetwork])

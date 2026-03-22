@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { useNavigate, useOutletContext } from 'react-router-dom'
 import type { LayoutOutletContext } from '../layoutOutletContext'
 
-/** Abre el modal de confirmación de depósito y vuelve al inicio. */
+/** Opens the deposit confirmation modal and returns home. */
 export function Deposit() {
   const navigate = useNavigate()
   const { openDepositModal } = useOutletContext<LayoutOutletContext>()
