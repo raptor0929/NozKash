@@ -1,26 +1,24 @@
 # aleph-hackathon-m2026
 
-Proyecto hackathon — wallet UI **eGhostCash** (paquete npm: `nozkash`).
+Wallet UI **eGhostCash** / **NozKash** (paquete npm: `nozkash`).
 
-**Repositorio:** [github.com/Simonethg/aleph-hackathon-m2026](https://github.com/Simonethg/aleph-hackathon-m2026)
-
-**Versión actual:** 1.0.0 (`v1.0`) — ver `CHANGELOG.md` y `VERSION`.
+**Toda la aplicación vive en la carpeta [`app/`](./app/).** Trabajá ahí: dependencias, Vite, `npm run dev`, etc.
 
 ```bash
+cd app
 npm install
 npm run dev
 ```
 
-## GitHub / hackathon
+**Repositorio:** [github.com/Simonethg/aleph-hackathon-m2026](https://github.com/Simonethg/aleph-hackathon-m2026)
 
-Identidad sugerida para los commits:
+**Contrato GhostVault (Fuji):** [Snowtrace testnet — `0x0cd5…4352`](https://testnet.snowtrace.io/address/0x0cd5b34e58c579105A3c080Bb3170d032a544352)
 
-- **Nombre:** Simonethg  
-- **Email:** simonethfernandez@gmail.com  
+**Versión:** ver `app/CHANGELOG.md` y `app/VERSION`.
 
-**Subir el proyecto e integrar al equipo (SSH, invitar compañeros, clone, `npm install`):**  
-→ **[docs/HACKATHON_EQUIPO.md](docs/HACKATHON_EQUIPO.md)**
+## Documentación
 
-Configuración general y alternativa HTTPS: **[docs/GITHUB_SETUP.md](docs/GITHUB_SETUP.md)**
+- [app/docs/HACKATHON_EQUIPO.md](app/docs/HACKATHON_EQUIPO.md)
+- [app/docs/GITHUB_SETUP.md](app/docs/GITHUB_SETUP.md)
 
-> Los comandos `git remote` / `git push` conviene ejecutarlos en la **Terminal de macOS** con tu usuario ya logueado en GitHub (SSH o `gh`).
+> Los paths de ejemplo en esos docs usan `~/nozkash`; ajustá a la ruta real de tu clon (p. ej. `.../ghost-tip-wallet/app`).
