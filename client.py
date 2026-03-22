@@ -566,7 +566,7 @@ def cmd_scan(
     fulfilled: dict[str, tuple[int, int]] = {}
     for evt in fulfilled_events:
         did = Web3.to_checksum_address(evt["args"]["depositId"])
-        sig = evt["args"]["blindedSignature"]
+        sig = evt["args"]["S_prime"]
         fulfilled[did] = (int(sig[0]), int(sig[1]))
         if is_verbose():
             kv_hex(f"  S'.x [{_short(did, 6, 4)}]", hex(int(sig[0])))
