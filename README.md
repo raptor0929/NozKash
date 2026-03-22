@@ -373,4 +373,4 @@ npx tsx client.ts redeem --index 0 --to 0xRecipient
 
 ## License
 
-This project is provided for research and educational purposes.
+Dedicated to public goods under CC0.
