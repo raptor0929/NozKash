@@ -104,6 +104,7 @@ For comparison, a zk-SNARK privacy pool typically costs 500k–1.5M gas per oper
 | Node.js | 20+ | TypeScript library, CLI client, test suite |
 | [uv](https://docs.astral.sh/uv/) | latest | Python package management |
 | npm | bundled with Node | TypeScript package management |
+| [Foundry](https://book.getfoundry.sh/) | latest | Solidity testing and deployment |
 
 ---
 
@@ -111,21 +112,22 @@ For comparison, a zk-SNARK privacy pool typically costs 500k–1.5M gas per oper
 
 ```bash
 # Install dependencies
-uv venv && uv sync      # Python
-npm install              # TypeScript (viem, mcl-wasm, @noble/curves, etc.)
+cd py && uv venv && uv sync       # Python
+cd ts && npm install               # TypeScript (viem, mcl-wasm, @noble/curves, etc.)
 
 # Generate keys and .env
-uv run generate_keys.py
+cd py && uv run generate_keys.py
 
 # Derive and add BLS public key to .env
-uv run derive_bls.py 0x<your_bls_privkey>
+cd py && uv run derive_bls.py 0x<your_bls_privkey>
 
 # Run tests
-uv run pytest -v         # Python unit + vector tests
-npx vitest run           # TypeScript vector parity tests
+cd py && uv run pytest -v          # Python unit + vector tests
+cd ts && npx vitest run            # TypeScript vector parity tests
+cd sol && forge test               # Solidity contract tests (forks Fuji)
 
 # Generate cross-language test vectors
-uv run generate_vectors.py
+cd py && uv run generate_vectors.py
 ```
 
 ---
@@ -133,60 +135,71 @@ uv run generate_vectors.py
 ## Repository Layout
 
 ```
-├── GhostVault.sol                # Solidity smart contract
-├── ghost_vault_abi.json          # Contract ABI (shared source of truth)
-├── example.env                   # Template for .env configuration
-├── ghost_flow.sh                 # Full lifecycle runner script
+├── README.md                         # This file
+├── LICENSE.md                        # CC0 1.0 — public domain dedication
+├── example.env                       # Template for .env configuration
+├── ghost_flow.sh                     # Full lifecycle runner script
 │
-│── Cryptographic Libraries ──────────────────────────
-├── ghost_library.py              # Python crypto library (source of truth)
-├── ghost-library.ts              # TypeScript port (byte-for-byte parity)
-├── bn254-crypto.ts               # Low-level BN254 primitives (mcl-wasm)
+├── py/                               # Python: crypto library, mint, CLI wallet
+│   ├── ghost_library.py              # Cryptographic library (source of truth)
+│   ├── client.py                     # CLI wallet (deposit/scan/redeem/status/balance)
+│   ├── mint_server.py                # Production mint daemon (WebSocket)
+│   ├── mint_mock.py                  # Offline mock mint for testing
+│   ├── redeem_mock.py                # Offline mock redeemer for testing
+│   ├── contract_errors.py            # Decodes GhostVault revert selectors
+│   ├── generate_keys.py              # Keypair + .env generator
+│   ├── generate_vectors.py           # Cross-language test vector generator
+│   ├── derive_bls.py                 # BLS pubkey derivation tool
+│   ├── ghost_library_test.py         # Python unit tests
+│   ├── test_vectors.py               # Python parametrized vector tests
+│   ├── ghost_tip_test.py             # Python end-to-end smoke test
+│   ├── test_vectors/                 # Generated vector files (JSON)
+│   ├── pyproject.toml                # Python dependencies
+│   └── README.md                     # Python-specific documentation
 │
-│── CLI Wallets ──────────────────────────────────────
-├── client.py                     # Python wallet (deposit/scan/redeem/status/balance)
-├── client.ts                     # TypeScript wallet (deposit/scan/redeem/balance)
+├── ts/                               # TypeScript: crypto library, CLI client, tests
+│   ├── ghost-library.ts              # TypeScript crypto port (byte-for-byte parity)
+│   ├── bn254-crypto.ts               # Low-level BN254 primitives (mcl-wasm)
+│   ├── client.ts                     # TypeScript CLI wallet (deposit/scan/redeem/balance)
+│   ├── test-vectors.test.ts          # TypeScript parametrized vector tests
+│   ├── test.ts                       # TypeScript end-to-end smoke test
+│   ├── package.json                  # Node dependencies
+│   └── tsconfig.json                 # TypeScript config
 │
-│── Mint Infrastructure ──────────────────────────────
-├── mint_server.py                # Production mint daemon (WebSocket)
-├── mint_mock.py                  # Offline mock mint for testing
-├── redeem_mock.py                # Offline mock redeemer for testing
+├── sol/                              # Solidity: smart contract + Foundry project
+│   ├── src/
+│   │   └── GhostVault.sol            # Solidity smart contract
+│   ├── test/
+│   │   ├── GhostVault.t.sol          # Foundry test suite (forks Fuji)
+│   │   └── test-vectors/             # JSON vectors for Solidity tests
+│   ├── script/
+│   │   └── GhostVault.s.sol          # Deployment script
+│   ├── scripts/
+│   │   ├── generate_vectors.py       # Vector generator for Solidity tests
+│   │   ├── ghost_library.py          # Standalone copy for sol/scripts
+│   │   └── forge_test_generated_vectors.sh
+│   ├── ghost_vault_abi.json          # Contract ABI (shared source of truth)
+│   ├── foundry.toml                  # Foundry configuration
+│   ├── lib/forge-std/                # Forge standard library (git submodule)
+│   └── README.md                     # Solidity-specific documentation
 │
-│── Tooling ──────────────────────────────────────────
-├── contract_errors.py            # Decodes GhostVault revert selectors
-├── generate_keys.py              # Keypair + .env generator
-├── generate_vectors.py           # Cross-language test vector generator
-├── derive_bls.py                 # BLS pubkey derivation tool
-│
-│── Test Suite ───────────────────────────────────────
-├── ghost_library_test.py         # Python unit tests
-├── test_vectors.py               # Python parametrized vector tests
-├── test-vectors.test.ts          # TypeScript parametrized vector tests
-├── ghost_tip_test.py             # Python end-to-end smoke test
-├── test.ts                       # TypeScript end-to-end smoke test
-├── test_vectors/                 # Generated vector files (JSON)
-│
-│── Config ───────────────────────────────────────────
-├── pyproject.toml                # Python dependencies
-├── package.json                  # Node dependencies
-├── tsconfig.json                 # TypeScript config
-├── .env                          # Local secrets (never committed)
-│
-│── Frontend Wallet (app/) ───────────────────────────
-├── app/src/crypto/               # Browser-bundled BN254 + ghost-library
-├── app/src/components/           # React components (Layout, DepositConfirmModal, Splash)
-├── app/src/context/              # GhostMasterSeedProvider, PrivacyProvider
-├── app/src/hooks/                # useWallet, useRedeemSign
-├── app/src/lib/                  # ghostVault scanner, Fuji RPC, ethereum helpers
-├── app/src/pages/                # Dashboard, Deposit, Redeem, Recovery
-└── app/src/styles/               # eghostcash.css (full custom theme)
+└── app/                              # Frontend: React wallet UI
+    ├── src/
+    │   ├── crypto/                   # Browser-bundled BN254 + ghost-library
+    │   ├── components/               # React components (Layout, DepositConfirmModal, Splash)
+    │   ├── context/                  # GhostMasterSeedProvider, PrivacyProvider
+    │   ├── hooks/                    # useWallet, useRedeemSign
+    │   ├── lib/                      # ghostVault scanner, Fuji RPC, ethereum helpers
+    │   ├── pages/                    # Dashboard, Deposit, Redeem, Recovery
+    │   └── styles/                   # eghostcash.css (full custom theme)
+    └── ...
 ```
 
 ---
 
 ## Smart Contract
 
-The GhostVault contract handles the complete token lifecycle using only standard EVM precompiles:
+The GhostVault contract (`sol/src/GhostVault.sol`) handles the complete token lifecycle using only standard EVM precompiles:
 
 | Function | Description |
 |----------|-------------|
@@ -211,6 +224,7 @@ Both Python and TypeScript clients implement identical functionality, share the 
 ### Python
 
 ```bash
+cd py
 uv run client.py deposit --index 0              # Lock 0.01 ETH
 uv run client.py scan                            # Recover signed tokens (incremental)
 uv run client.py redeem --index 0 --to 0xAddr    # Redeem to any address
@@ -223,6 +237,7 @@ Additional flags: `--mock` (fully offline), `--dry-run` (simulate with RPC), `--
 ### TypeScript
 
 ```bash
+cd ts
 npx tsx client.ts deposit --index 0
 npx tsx client.ts scan
 npx tsx client.ts redeem --index 0 --to 0xAddr
@@ -246,6 +261,7 @@ Scanning is incremental (resumes from last block) and skips tokens with cached s
 Stateless async daemon. Connects over WebSocket, listens for `DepositLocked` events, blind-signs, and calls `announce()`.
 
 ```bash
+cd py
 uv run mint_server.py
 uv run mint_server.py --verbosity verbose    # Intermediate values
 uv run mint_server.py --verbosity debug      # Raw event data
@@ -273,7 +289,7 @@ The mint validates G1 points before signing — off-curve inputs are rejected wi
 
 ## Cross-Language Parity
 
-The Python library (`ghost_library.py`) is the cryptographic source of truth. The TypeScript port (`ghost-library.ts` + `bn254-crypto.ts`) produces byte-identical output for every operation.
+The Python library (`py/ghost_library.py`) is the cryptographic source of truth. The TypeScript port (`ts/ghost-library.ts` + `ts/bn254-crypto.ts`) produces byte-identical output for every operation.
 
 Both languages use:
 - Identical hash-to-curve (try-and-increment with `keccak256(msg || counter_be32)`)
@@ -284,9 +300,9 @@ Both languages use:
 Parity is enforced by shared test vectors:
 
 ```bash
-uv run generate_vectors.py           # Generate (Python)
-uv run pytest test_vectors.py -v     # Verify (Python)
-npx vitest run                       # Verify (TypeScript)
+cd py && uv run generate_vectors.py        # Generate (Python)
+cd py && uv run pytest test_vectors.py -v  # Verify (Python)
+cd ts && npx vitest run                    # Verify (TypeScript)
 ```
 
 Each vector tests: G2 key derivation, secret derivation, hash-to-curve, blinding, blind signature, unblinding, ECDSA proof, and full BLS pairing.
@@ -313,15 +329,18 @@ Each vector tests: G2 key derivation, secret derivation, hash-to-curve, blinding
 
 ```bash
 # Python unit tests
-uv run pytest ghost_library_test.py -v
+cd py && uv run pytest ghost_library_test.py -v
 
 # Cross-language vector tests
-uv run pytest test_vectors.py -v     # Python
-npx vitest run                       # TypeScript
+cd py && uv run pytest test_vectors.py -v     # Python
+cd ts && npx vitest run                       # TypeScript
+
+# Solidity contract tests (forks Avalanche Fuji)
+cd sol && forge test
 
 # End-to-end smoke tests
-uv run ghost_tip_test.py             # Python (or --mock for full offline flow)
-npx tsx test.ts                      # TypeScript
+cd py && uv run ghost_tip_test.py             # Python (or --mock for full offline flow)
+cd ts && npx tsx test.ts                      # TypeScript
 
 # Full lifecycle (on-chain or mock)
 ./ghost_flow.sh --to 0xRecipient              # On-chain
@@ -416,25 +435,29 @@ Override with `VITE_GHOST_VAULT_ADDRESS` in `.env`.
 
 ```bash
 # 1. Generate all keys
-uv run generate_keys.py
+cd py && uv run generate_keys.py
 
 # 2. Derive BLS public key
-uv run derive_bls.py 0x<privkey_from_env>
+cd py && uv run derive_bls.py 0x<privkey_from_env>
 
 # 3. Deploy GhostVault with pkMint (4 uint256) and mintAuthority address
+#    (via Foundry)
+cd sol && forge script script/GhostVault.s.sol:GhostVaultScript --rpc-url <your_rpc_url> --private-key <your_private_key>
 #    Set CONTRACT_ADDRESS in .env
 
 # 4. Fund wallet addresses with testnet ETH
 
 # 5. Start the mint server (separate terminal)
-uv run mint_server.py
+cd py && uv run mint_server.py
 
 # 6. Deposit, scan, redeem (Python or TypeScript)
+cd py
 uv run client.py deposit --index 0
 uv run client.py scan
 uv run client.py redeem --index 0 --to 0xRecipient
 
 # Or in TypeScript:
+cd ts
 npx tsx client.ts deposit --index 0
 npx tsx client.ts scan
 npx tsx client.ts redeem --index 0 --to 0xRecipient
