@@ -20,15 +20,10 @@ import {
   filterVaultActivity,
   formatTxAmountDisplay,
 } from '../lib/historyQuery'
-import {
-  fetchVaultActivityForFirstTokens,
-  ghostVaultActivityDebug,
-  GHOST_VAULT_ACTIVITY_REFRESH_EVENT,
-  GHOST_VAULT_RPC_POLL_MS,
-} from '../lib/ghostVault'
 import { sendVaultRedeemTransaction } from '../lib/sendVaultRedeem'
 import { isStartRedeemVisible, shouldShowRedeemHere } from '../lib/redeemUiGates'
 import { mergeVaultRowsWithRedeemDraft } from '../lib/vaultRedeemMerge'
+import { useGhostVaultActivityLive } from '../hooks/useGhostVaultActivityLive'
 import type { LayoutOutletContext } from '../layoutOutletContext'
 import type { ActivityKind, HistoryFilterType, VaultTx } from '../types/activity'
 
@@ -120,94 +115,18 @@ export function Dashboard() {
   const [dateTo, setDateTo] = useState('')
   const [filterOpen, setFilterOpen] = useState(false)
   const filterWrapRef = useRef<HTMLDivElement>(null)
-  const [vaultChainRows, setVaultChainRows] = useState<VaultTx[]>([])
-  /** First fetch after mount / seed change streams rows per batch; later polls update once at the end. */
-  const vaultActivityIncrementalRef = useRef(true)
-
-  const seedRef = useRef(effectiveMasterSeed)
-  const networkRef = useRef(network)
-  seedRef.current = effectiveMasterSeed
-  networkRef.current = network
+  const { rows: vaultChainRows, loading: vaultLoading, scanBatch } = useGhostVaultActivityLive({
+    masterSeed: effectiveMasterSeed,
+    seedRevision,
+    network,
+    networkLabel: network === 'Fuji' ? 'Fuji' : network,
+  })
 
   useEffect(() => {
     setRedemptionDraft(loadRedemptionDraft())
   }, [account, seedRevision])
 
-  useEffect(() => {
-    let cancelled = false
-    const clearRows = () => {
-      queueMicrotask(() => {
-        if (!cancelled) setVaultChainRows([])
-      })
-    }
-
-    if (network !== 'Fuji') {
-      clearRows()
-      return () => {
-        cancelled = true
-      }
-    }
-    if (!effectiveMasterSeed) {
-      clearRows()
-      return () => {
-        cancelled = true
-      }
-    }
-
-    setVaultChainRows([])
-    vaultActivityIncrementalRef.current = true
-
-    async function loadVault() {
-      if (cancelled) return
-      const net = networkRef.current
-      const seed = seedRef.current
-      if (net !== 'Fuji' || !seed) {
-        if (!cancelled) setVaultChainRows([])
-        return
-      }
-      try {
-        const useIncremental = vaultActivityIncrementalRef.current
-        ghostVaultActivityDebug('Dashboard poll → fetchVaultActivityForFirstTokens')
-        const rows = await fetchVaultActivityForFirstTokens(seed, {
-          networkLabel: net,
-          onProgress:
-            useIncremental && !cancelled
-              ? (r) => {
-                  if (!cancelled) setVaultChainRows(r)
-                }
-              : undefined,
-        })
-        ghostVaultActivityDebug('Dashboard poll ← rows', {
-          count: rows.length,
-          tokenIndices: rows.map((r) => r.tokenIndex),
-        })
-        if (!cancelled) {
-          setVaultChainRows(rows)
-          vaultActivityIncrementalRef.current = false
-        }
-      } catch (e) {
-        console.error('GhostVault activity fetch', e)
-        if (!cancelled) setVaultChainRows([])
-      }
-    }
-
-    void loadVault()
-
-    const intervalId = window.setInterval(() => {
-      void loadVault()
-    }, GHOST_VAULT_RPC_POLL_MS)
-
-    const onVaultActivityRefresh = () => {
-      void loadVault()
-    }
-    window.addEventListener(GHOST_VAULT_ACTIVITY_REFRESH_EVENT, onVaultActivityRefresh)
-
-    return () => {
-      cancelled = true
-      window.clearInterval(intervalId)
-      window.removeEventListener(GHOST_VAULT_ACTIVITY_REFRESH_EVENT, onVaultActivityRefresh)
-    }
-  }, [network, seedRevision, account, !!effectiveMasterSeed])
+  // Vault activity is loaded/updated via `useGhostVaultActivityLive`.
 
   useEffect(() => {
     if (!filterOpen) return
@@ -314,15 +233,6 @@ export function Dashboard() {
       requestWalletBalanceRefresh()
       showToast('Redeem confirmed · funds sent to this account', 'success')
       setRedemptionDraft(null)
-      const seed = effectiveMasterSeed
-      if (seed && network === 'Fuji') {
-        const rows = await fetchVaultActivityForFirstTokens(seed, {
-          networkLabel: network,
-          skipCache: true,
-          onProgress: (r) => setVaultChainRows(r),
-        })
-        setVaultChainRows(rows)
-      }
     } catch (err: unknown) {
       const e = err as { code?: number; message?: string }
       if (e?.code === 4001) {
@@ -454,8 +364,18 @@ export function Dashboard() {
         </div>
 
         <div>
+          {scanBatch != null ? (
+            <div className="no-results">
+              Loading activity · batch {scanBatch + 1}…
+            </div>
+          ) : null}
+
           {filtered.length === 0 ? (
-            <div className="no-results">No transactions found</div>
+            scanBatch == null && vaultLoading ? (
+              <div className="no-results">Loading activity…</div>
+            ) : scanBatch == null ? (
+              <div className="no-results">No transactions found</div>
+            ) : null
           ) : (
             filtered.map((item) => {
               const ic = kindToClass(item.type)

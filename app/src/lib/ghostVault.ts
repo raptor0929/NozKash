@@ -33,6 +33,16 @@ function parseEnvPositiveIntMin(
   return Math.max(min, parseEnvPositiveInt(raw, fallback))
 }
 
+function parseEnvPositiveIntClamp(
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  const n = parseEnvPositiveIntMin(raw, fallback, min)
+  return Math.min(max, n)
+}
+
 const GHOST_VAULT_MAX_BATCHES_FALLBACK = 128
 /** Safety clamp so a typo in env does not schedule millions of RPC rounds. */
 const GHOST_VAULT_MAX_BATCHES_HARD_CAP = 10_000
@@ -131,11 +141,26 @@ export function invalidateVaultActivityCache(): void {
 /** Dispatched after deposit/redeem so UIs refetch activity without waiting for the poll interval. */
 export const GHOST_VAULT_ACTIVITY_REFRESH_EVENT = 'ghost:vault-activity-refresh'
 
+let ghostVaultLiveActive = false
+
+/**
+ * When vault live (WebSocket incremental updates) is active, we avoid clearing
+ * the HTTP activity cache on deposit/redeem so the app doesn’t immediately
+ * re-scan large log ranges and trigger 429s.
+ */
+export function setGhostVaultLiveActive(active: boolean): void {
+  ghostVaultLiveActive = active
+}
+
 let vaultActivityRefreshDebounce: number | null = null
 
-/** Clears activity cache and notifies listeners (e.g. Dashboard) to refetch soon (debounced to avoid duplicate scans). */
+/**
+ * Notifies listeners (e.g. Dashboard) to refetch soon (debounced to avoid
+ * duplicate scans). When live updates are active we skip clearing the HTTP
+ * cache to keep the app stable on public RPC.
+ */
 export function requestVaultActivityRefresh(): void {
-  invalidateVaultActivityCache()
+  if (!ghostVaultLiveActive) invalidateVaultActivityCache()
   if (vaultActivityRefreshDebounce != null) {
     window.clearTimeout(vaultActivityRefreshDebounce)
   }
@@ -188,7 +213,12 @@ export const GHOST_VAULT_SCAN_FROM_BLOCK_HEX = '0x329896c' // 53053804
  * `max(lastUsedTokenIndex + 1, GHOST_VAULT_MIN_NEW_DEPOSIT_TOKEN_INDEX)`, not the
  * lowest unused index (gaps are not backfilled).
  */
-export const GHOST_VAULT_TOKEN_BATCH_SIZE = 5
+export const GHOST_VAULT_TOKEN_BATCH_SIZE = parseEnvPositiveIntClamp(
+  import.meta.env.VITE_GHOST_VAULT_TOKEN_BATCH_SIZE,
+  5,
+  1,
+  50
+)
 
 /**
  * Lowest token index the UI will allocate for a **new** deposit (`lastUsed + 1`, but
@@ -591,6 +621,12 @@ export type GhostVaultFetchOptions = {
    * Also invoked once on cache hit with the full cached list.
    */
   onProgress?: (rows: VaultTx[]) => void
+  /**
+   * Called after each scanned batch (including empty ones) with the current
+   * batch index and merged rows so far. Useful to show "progressive loading"
+   * without waiting for the final scan result.
+   */
+  onBatchProgress?: (batchIndex: number, rows: VaultTx[], tokenIndices: number[]) => void
 }
 
 /**
@@ -887,6 +923,9 @@ async function fetchVaultActivityForFirstTokensImpl(
       lockedById,
       fulfilledById
     )
+
+    // Progressive loading: update UI after each batch, even if it yielded no new rows.
+    options?.onBatchProgress?.(b, mergedRows, indices)
     if (batchAny) {
       consecutiveEmptyBatches = 0
     } else {

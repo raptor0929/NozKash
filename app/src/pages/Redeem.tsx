@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useOutletContext } from 'react-router-dom'
 import { useGhostMasterSeed } from '../context/GhostMasterSeedProvider'
 import {
@@ -12,13 +12,9 @@ import {
   saveRedemptionDraft,
 } from '../crypto/ghostRedeem'
 import { ensureFuji, getEthereum } from '../lib/ethereum'
-import {
-  fetchVaultActivityForFirstTokens,
-  GHOST_VAULT_ACTIVITY_REFRESH_EVENT,
-  GHOST_VAULT_DEPOSIT_AMOUNT_LABEL,
-  GHOST_VAULT_RPC_POLL_MS,
-} from '../lib/ghostVault'
+import { GHOST_VAULT_DEPOSIT_AMOUNT_LABEL } from '../lib/ghostVault'
 import { sendVaultRedeemTransaction } from '../lib/sendVaultRedeem'
+import { useGhostVaultActivityLive } from '../hooks/useGhostVaultActivityLive'
 import type { LayoutOutletContext } from '../layoutOutletContext'
 
 function isEthAddress(s: string): boolean {
@@ -54,10 +50,17 @@ export function Redeem() {
     null
   )
 
-  const seedRef = useRef(effectiveMasterSeed)
-  const networkRef = useRef(network)
-  seedRef.current = effectiveMasterSeed
-  networkRef.current = network
+  const {
+    rows: vaultRows,
+    loading: vaultLoading,
+    error: vaultError,
+    scanBatch,
+  } = useGhostVaultActivityLive({
+    masterSeed: effectiveMasterSeed,
+    seedRevision,
+    network,
+    networkLabel: network === 'Fuji' ? 'Fuji' : network,
+  })
 
   useEffect(() => {
     if (account && !recipientTouched) {
@@ -75,66 +78,23 @@ export function Redeem() {
       return
     }
 
-    let cancelled = false
-    setTokens([])
-    setLoadError(null)
-    setLoading(true)
+    const redeemable = vaultRows
+      .filter((r) => r.type === 'Deposit' && r.tokenIndex !== undefined)
+      .map((r) => ({
+        id: r.id,
+        tokenIndex: r.tokenIndex!,
+        label: r.historyLabel,
+      }))
 
-    async function load(isInitial: boolean) {
-      const seed = seedRef.current
-      const net = networkRef.current
-      if (!seed) return
-      if (isInitial) {
-        setLoading(true)
-        setLoadError(null)
-      }
-      try {
-        const rows = await fetchVaultActivityForFirstTokens(seed, {
-          networkLabel: net === 'Fuji' ? 'Fuji' : net,
-        })
-        if (cancelled) return
-        const redeemable = rows
-          .filter((r) => r.type === 'Deposit' && r.tokenIndex !== undefined)
-          .map((r) => ({
-            id: r.id,
-            tokenIndex: r.tokenIndex!,
-            label: r.historyLabel,
-          }))
-        setTokens(redeemable)
-        setSelectedId((prev) => {
-          if (prev && redeemable.some((t) => t.id === prev)) return prev
-          return redeemable[0]?.id ?? ''
-        })
-        if (isInitial) setLoadError(null)
-      } catch (e) {
-        if (!cancelled && isInitial) {
-          setLoadError(
-            e instanceof Error ? e.message : 'Could not load vault activity'
-          )
-          setTokens([])
-        }
-      } finally {
-        if (!cancelled && isInitial) setLoading(false)
-      }
-    }
+    setTokens(redeemable)
+    setSelectedId((prev) => {
+      if (prev && redeemable.some((t) => t.id === prev)) return prev
+      return redeemable[0]?.id ?? ''
+    })
 
-    void load(true)
-
-    const intervalId = window.setInterval(() => {
-      void load(false)
-    }, GHOST_VAULT_RPC_POLL_MS)
-
-    const onVaultActivityRefresh = () => {
-      void load(false)
-    }
-    window.addEventListener(GHOST_VAULT_ACTIVITY_REFRESH_EVENT, onVaultActivityRefresh)
-
-    return () => {
-      cancelled = true
-      window.clearInterval(intervalId)
-      window.removeEventListener(GHOST_VAULT_ACTIVITY_REFRESH_EVENT, onVaultActivityRefresh)
-    }
-  }, [network, seedRevision, account, !!effectiveMasterSeed])
+    setLoadError(vaultError)
+    setLoading(vaultLoading)
+  }, [vaultRows, vaultLoading, vaultError, effectiveMasterSeed])
 
   useEffect(() => {
     const d = loadRedemptionDraft()
@@ -290,7 +250,7 @@ export function Redeem() {
         </div>
         {loading && (
           <div className="modal-sub-label" style={{ marginBottom: 8 }}>
-            Loading…
+            Loading…{scanBatch != null ? ` (batch ${scanBatch + 1})` : ''}
           </div>
         )}
         {loadError && (
