@@ -14,21 +14,28 @@ import {
   useWallet,
 } from '../hooks/useWallet'
 import { DateRangePill } from '../components/DateRangePill'
-import { getEthereum } from '../lib/ethereum'
+import { deriveTokenSecrets, getDepositId } from '../crypto/ghost-library'
+import {
+  getEthereum,
+  NATIVE_CURRENCY_SYMBOL,
+  targetChainMismatchUserMessage,
+  TARGET_NETWORK_LABEL,
+} from '../lib/ethereum'
 import {
   ACTIVITY_TYPE_FILTERS,
   filterVaultActivity,
   formatTxAmountDisplay,
 } from '../lib/historyQuery'
 import { sendVaultRedeemTransaction } from '../lib/sendVaultRedeem'
+import { sendVaultRefundTransaction } from '../lib/sendVaultRefund'
 import { isStartRedeemVisible, shouldShowRedeemHere } from '../lib/redeemUiGates'
 import { mergeVaultRowsWithRedeemDraft } from '../lib/vaultRedeemMerge'
 import { useGhostVaultActivityLive } from '../hooks/useGhostVaultActivityLive'
 import type { LayoutOutletContext } from '../layoutOutletContext'
 import type { ActivityKind, HistoryFilterType, VaultTx } from '../types/activity'
 
-/** Matches `GHOST_VAULT_DEPOSIT_AMOUNT_LABEL` (0.01 AVAX per deposit). */
-const VAULT_DENOMINATION_AVAX = 0.01
+/** Matches `GHOST_VAULT_DEPOSIT_AMOUNT_LABEL` (0.001 ETH per deposit). */
+const VAULT_DENOMINATION_ETH = 0.001
 
 function kindToClass(k: ActivityKind) {
   switch (k) {
@@ -38,6 +45,8 @@ function kindToClass(k: ActivityKind) {
       return 'redeem'
     case 'Pending':
       return 'pending'
+    case 'Refunded':
+      return 'refunded'
   }
 }
 
@@ -61,6 +70,18 @@ function ActivityIcon({ kind }: { kind: ActivityKind }) {
         <path
           d="M12 19V5M5 12l7-7 7 7"
           stroke="var(--red2)"
+          strokeWidth="2"
+          strokeLinecap="round"
+        />
+      </svg>
+    )
+  }
+  if (cls === 'refunded') {
+    return (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+        <path
+          d="M4 12h16M8 8l-4 4 4 4"
+          stroke="var(--text2)"
           strokeWidth="2"
           strokeLinecap="round"
         />
@@ -91,12 +112,7 @@ function FilterFunnelIcon() {
 export function Dashboard() {
   const { privacyOn } = usePrivacy()
   const { effectiveMasterSeed, seedRevision } = useGhostMasterSeed()
-  const {
-    network,
-    account,
-    homeBalanceMain,
-    openWalletAccountPicker,
-  } = useWallet()
+  const { network, account, homeBalanceMain } = useWallet()
   const { openDepositModal, showToast } =
     useOutletContext<LayoutOutletContext>()
 
@@ -104,10 +120,9 @@ export function Dashboard() {
     () => loadRedemptionDraft()
   )
   const [redeemingId, setRedeemingId] = useState<string | null>(null)
+  const [refundingId, setRefundingId] = useState<string | null>(null)
   const [startingRedeemId, setStartingRedeemId] = useState<string | null>(null)
   const [changeWalletModalOpen, setChangeWalletModalOpen] = useState(false)
-  const [changeWalletPickerPending, setChangeWalletPickerPending] =
-    useState(false)
 
   const [activeFilter, setActiveFilter] =
     useState<HistoryFilterType>('all')
@@ -119,7 +134,8 @@ export function Dashboard() {
     masterSeed: effectiveMasterSeed,
     seedRevision,
     network,
-    networkLabel: network === 'Fuji' ? 'Fuji' : network,
+    networkLabel:
+      network === TARGET_NETWORK_LABEL ? TARGET_NETWORK_LABEL : network,
   })
 
   useEffect(() => {
@@ -168,8 +184,8 @@ export function Dashboard() {
     return {
       validCount,
       spentCount,
-      validEth: `${(validCount * VAULT_DENOMINATION_AVAX).toFixed(2)} AVAX`,
-      spentEth: `${(spentCount * VAULT_DENOMINATION_AVAX).toFixed(2)} AVAX`,
+      validEth: `${(validCount * VAULT_DENOMINATION_ETH).toFixed(3)} ETH`,
+      spentEth: `${(spentCount * VAULT_DENOMINATION_ETH).toFixed(3)} ETH`,
     }
   }, [vaultChainRows])
 
@@ -187,8 +203,8 @@ export function Dashboard() {
       showToast('Connect your wallet first.', 'error')
       return
     }
-    if (network !== 'Fuji') {
-      showToast('Switch to Avalanche Fuji.', 'error')
+    if (network !== TARGET_NETWORK_LABEL) {
+      showToast(targetChainMismatchUserMessage(), 'error')
       return
     }
     setStartingRedeemId(item.id)
@@ -208,6 +224,50 @@ export function Dashboard() {
       )
     } finally {
       setStartingRedeemId(null)
+    }
+  }
+
+  const handleRefund = async (item: VaultTx) => {
+    if (item.type !== 'Pending' || item.tokenIndex === undefined) return
+    if (!effectiveMasterSeed) {
+      showToast('Unlock the vault (sign) to refund.', 'error')
+      return
+    }
+    if (!account) {
+      showToast('Connect your wallet first.', 'error')
+      return
+    }
+    if (network !== TARGET_NETWORK_LABEL) {
+      showToast(targetChainMismatchUserMessage(), 'error')
+      return
+    }
+    const ethereum = getEthereum()
+    if (!ethereum) {
+      showToast('No Ethereum wallet found', 'error')
+      return
+    }
+    setRefundingId(item.id)
+    try {
+      const secrets = deriveTokenSecrets(effectiveMasterSeed, item.tokenIndex)
+      const depositId = getDepositId(secrets)
+      await sendVaultRefundTransaction({ ethereum, depositId })
+      requestWalletBalanceRefresh()
+      showToast('Refund confirmed · ETH returned to this wallet', 'success')
+    } catch (err: unknown) {
+      const e = err as { code?: number; message?: string }
+      if (e?.code === 4001) {
+        showToast('Transaction cancelled in your wallet', 'error')
+        return
+      }
+      const msg =
+        typeof e?.message === 'string' ? e.message : 'Could not refund deposit'
+      if (/user rejected|denied/i.test(msg)) {
+        showToast('Transaction cancelled in your wallet', 'error')
+      } else {
+        showToast(msg, 'error')
+      }
+    } finally {
+      setRefundingId(null)
     }
   }
 
@@ -314,7 +374,7 @@ export function Dashboard() {
           </div>
           <div>
             <div className="add-deposit-label">Add deposit</div>
-            <div className="add-deposit-sub">Shield AVAX · {network}</div>
+            <div className="add-deposit-sub">Shield ETH · {network}</div>
           </div>
         </div>
         <span className="add-deposit-badge">+ MINT</span>
@@ -399,6 +459,26 @@ export function Dashboard() {
                     >
                       {privacyOn ? '••••' : amt}
                     </span>
+                    {item.type === 'Pending' ? (
+                      <div className="activity-redeem-actions">
+                        {effectiveMasterSeed ? (
+                          <button
+                            type="button"
+                            className="history-redeem-btn history-redeem-btn--secondary"
+                            style={{ fontSize: 11, padding: '4px 10px' }}
+                            disabled={
+                              refundingId === item.id ||
+                              redeemingId === item.id ||
+                              startingRedeemId === item.id ||
+                              network !== TARGET_NETWORK_LABEL
+                            }
+                            onClick={() => void handleRefund(item)}
+                          >
+                            {refundingId === item.id ? 'Refunding…' : 'Refund'}
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
                     {item.type === 'Deposit' ? (
                       <div className="activity-redeem-actions">
                         {isStartRedeemVisible(
@@ -413,7 +493,7 @@ export function Dashboard() {
                               disabled={
                                 startingRedeemId === item.id ||
                                 redeemingId === item.id ||
-                                network !== 'Fuji'
+                                network !== TARGET_NETWORK_LABEL
                               }
                               onClick={() => handleStartRedeem(item)}
                             >
@@ -434,7 +514,8 @@ export function Dashboard() {
                             type="button"
                             className="history-redeem-btn"
                             disabled={
-                              redeemingId === item.id || network !== 'Fuji'
+                              redeemingId === item.id ||
+                              network !== TARGET_NETWORK_LABEL
                             }
                             onClick={() => void handleHomeRedeem(item)}
                           >
@@ -510,27 +591,11 @@ export function Dashboard() {
               style={{ marginBottom: 16, lineHeight: 1.45 }}
             >
               In your wallet, switch to the account that will{' '}
-              <strong>pay gas</strong> and <strong>receive</strong> the 0.01 AVAX
+              <strong>pay gas</strong> and <strong>receive</strong> the 0.001{' '}
+              {NATIVE_CURRENCY_SYMBOL}
               (e.g. Account 2). When you come back to this page,{' '}
-              <strong>Redeem here</strong> will appear on the mint row — tap it
-              to call <code style={{ fontSize: 11 }}>GhostVault.redeem</code>.
+              <strong>Redeem here</strong> will appear on the mint row.
             </p>
-            <button
-              type="button"
-              className="btn-secondary"
-              style={{ width: '100%', marginBottom: 10 }}
-              disabled={changeWalletPickerPending || network !== 'Fuji'}
-              onClick={() => {
-                setChangeWalletPickerPending(true)
-                void openWalletAccountPicker().finally(() =>
-                  setChangeWalletPickerPending(false)
-                )
-              }}
-            >
-              {changeWalletPickerPending
-                ? 'Wallet…'
-                : 'Choose account in your wallet'}
-            </button>
             <button
               type="button"
               className="btn-full"
@@ -541,6 +606,7 @@ export function Dashboard() {
           </div>
         </div>
       ) : null}
+
     </div>
   )
 }

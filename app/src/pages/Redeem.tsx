@@ -11,7 +11,13 @@ import {
   redemptionDraftMatchesSecrets,
   saveRedemptionDraft,
 } from '../crypto/ghostRedeem'
-import { ensureFuji, getEthereum } from '../lib/ethereum'
+import {
+  ensureTargetChain,
+  getEthereum,
+  targetChainMismatchUserMessage,
+  TARGET_NETWORK_LABEL,
+  walletNetworkBadgeLabel,
+} from '../lib/ethereum'
 import { GHOST_VAULT_DEPOSIT_AMOUNT_LABEL } from '../lib/ghostVault'
 import { sendVaultRedeemTransaction } from '../lib/sendVaultRedeem'
 import { useGhostVaultActivityLive } from '../hooks/useGhostVaultActivityLive'
@@ -59,7 +65,8 @@ export function Redeem() {
     masterSeed: effectiveMasterSeed,
     seedRevision,
     network,
-    networkLabel: network === 'Fuji' ? 'Fuji' : network,
+    networkLabel:
+      network === TARGET_NETWORK_LABEL ? TARGET_NETWORK_LABEL : network,
   })
 
   useEffect(() => {
@@ -170,9 +177,9 @@ export function Redeem() {
 
     setSendPending(true)
     try {
-      const okChain = await ensureFuji(ethereum)
+      const okChain = await ensureTargetChain(ethereum)
       if (!okChain) {
-        showToast('Switch to Avalanche Fuji (43113) in your wallet.', 'error')
+        showToast(targetChainMismatchUserMessage(), 'error')
         return
       }
 
@@ -220,7 +227,8 @@ export function Redeem() {
     }
   }
 
-  const netLabel = network === 'Fuji' ? 'Avalanche · Fuji' : network
+  const netLabel =
+    network === TARGET_NETWORK_LABEL ? walletNetworkBadgeLabel() : network
 
   return (
     <div className="page-inner">
@@ -306,7 +314,8 @@ export function Redeem() {
           style={{ marginBottom: 10, fontSize: 11, lineHeight: 1.45 }}
         >
           Pick a connected wallet account or enter another address. That address is the
-          contract <strong>recipient</strong>: it receives the 0.01 AVAX. The app
+          contract <strong>recipient</strong>: it receives the{' '}
+          {GHOST_VAULT_DEPOSIT_AMOUNT_LABEL}. The app
           builds the redeem ECDSA signature with the <strong>spend</strong> key
           (nullifier), not the blind key.
         </p>
@@ -342,7 +351,7 @@ export function Redeem() {
           type="button"
           className="btn-secondary"
           style={{ marginBottom: 12, width: '100%' }}
-          disabled={pickerPending || network !== 'Fuji'}
+          disabled={pickerPending || network !== TARGET_NETWORK_LABEL}
           onClick={() => void openAccountPicker()}
         >
           {pickerPending
@@ -427,7 +436,7 @@ export function Redeem() {
           tokens.length === 0 ||
           !effectiveMasterSeed ||
           preparePending ||
-          network !== 'Fuji'
+          network !== TARGET_NETWORK_LABEL
         }
       >
         {preparePending
@@ -444,7 +453,7 @@ export function Redeem() {
           loading ||
           !isEthAddress(recipient) ||
           sendPending ||
-          network !== 'Fuji'
+          network !== TARGET_NETWORK_LABEL
         }
       >
         {sendPending ? 'Wallet…' : 'Step 2: send redeem (confirm in wallet)'}

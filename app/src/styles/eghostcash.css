@@ -209,6 +209,7 @@
 .activity-icon.deposit{background:var(--green-dim)}
 .activity-icon.redeem{background:var(--red-dim)}
 .activity-icon.pending{background:var(--yellow-dim)}
+.activity-icon.refunded{background:var(--surface2)}
 .activity-text{min-width:0;flex:1}
 .activity-type{font-size:13px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .activity-time{font-size:11px;color:var(--text3);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -217,6 +218,7 @@
 .activity-amount.deposit{color:var(--green)}
 .activity-amount.redeem{color:var(--red2)}
 .activity-amount.pending{color:var(--yellow)}
+.activity-amount.refunded{color:var(--text2)}
 /* Redeem column width matches amount (max-content column + stretched button) */
 .activity-right-col{
   display:grid;

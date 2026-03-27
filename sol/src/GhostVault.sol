@@ -5,7 +5,9 @@ pragma solidity ^0.8.20;
  * @title GhostVault — Revision D (minimal PoC)
  * @notice Ingress (deposit), delivery (announce), and egress (redeem) for
  *         fixed-denomination eCash with ECDSA nullifier + BLS pairing on BN254.
- *         No refund path — mint is trusted for fulfilment.
+ *         Refund path: if the mint never fulfils, the original depositor can
+ *         reclaim the locked ETH (see `refund`). `depositors[depositId]` links
+ *         the blind depositId to the EOA that sent `deposit()` (PoC tradeoff).
  *
  * Key derivation (client-side only — never sent to mint):
  *
@@ -62,7 +64,7 @@ contract GhostVault {
     uint256 internal constant BN254_ORDER =
         21888242871839275222246405745257275088548364400416034343698204186575808495617;
 
-    uint256 public constant DENOMINATION   = 0.01 ether;
+    uint256 public constant DENOMINATION   = 0.001 ether;
     uint256 public constant MAX_H2C_ITERS  = 65536;
 
     // -- State ------------------------------------------------------------------
@@ -82,6 +84,9 @@ contract GhostVault {
     /// @dev depositId (blind_addr) => true once MintFulfilled has been emitted.
     mapping(address => bool) internal announced;
 
+    /// @dev depositId => EOA that called `deposit()` (required for `refund`).
+    mapping(address => address) public depositors;
+
     // -- Events -----------------------------------------------------------------
 
     /// @dev Emitted when a deposit is locked.
@@ -93,6 +98,12 @@ contract GhostVault {
     /// @dev Emitted by the Mint after blind signing.
     ///      S' is safe in plaintext — useless without the blinding factor r.
     event MintFulfilled(address indexed depositId, uint256[2] S_prime);
+
+    /// @dev Emitted when a token is redeemed.
+    event Redeemed(address indexed nullifier, address indexed recipient);
+
+    /// @dev Emitted when a pending deposit is refunded to the original depositor.
+    event Refunded(address indexed depositId, address indexed to);
 
     // -- Errors -----------------------------------------------------------------
 
@@ -108,6 +119,8 @@ contract GhostVault {
     error DepositIdAlreadyUsed();
     error AlreadyFulfilled();
     error InvalidDepositId();
+    error NotDepositor();
+    error NothingToRefund();
 
     // -- Constructor ------------------------------------------------------------
 
@@ -119,7 +132,7 @@ contract GhostVault {
     // -- External: deposit ------------------------------------------------------
 
     /**
-     * @notice Lock 0.01 ETH and register a mint request.
+     * @notice Lock 0.001 ETH and register a mint request.
      *
      * @param depositId      blind.address — unique deposit identifier.
      * @param blindedPointB  G1 point B = r * H_G1(spend_addr).
@@ -133,6 +146,7 @@ contract GhostVault {
         if (awaitingFulfillment[depositId] || announced[depositId]) revert DepositIdAlreadyUsed();
 
         awaitingFulfillment[depositId] = true;
+        depositors[depositId] = msg.sender;
 
         emit DepositLocked(depositId, blindedPointB);
     }
@@ -155,19 +169,39 @@ contract GhostVault {
         emit MintFulfilled(depositId, S_prime);
     }
 
+    /**
+     * @notice Reclaim locked ETH if the mint never fulfilled this deposit.
+     * @dev Only the account that originally called `deposit()` may refund.
+     */
+    function refund(address depositId) external {
+        if (depositId == address(0)) revert InvalidDepositId();
+        if (!awaitingFulfillment[depositId]) revert NothingToRefund();
+        if (msg.sender != depositors[depositId]) revert NotDepositor();
+
+        awaitingFulfillment[depositId] = false;
+        delete depositors[depositId];
+
+        (bool sent,) = payable(msg.sender).call{value: DENOMINATION}("");
+        if (!sent) revert EthSendFailed();
+
+        emit Refunded(depositId, msg.sender);
+    }
+
     // -- External: redeem -------------------------------------------------------
 
     /**
-     * @notice Verify and redeem a token.  Transfers 0.01 ETH to recipient.
+     * @notice Verify and redeem a token.  Transfers 0.001 ETH to recipient.
+     * @param nullifier The spend / nullifier address; must match `ecrecover` on the redemption hash.
      */
     function redeem(
         address             recipient,
         bytes      calldata spendSignature,
+        address             nullifier,
         uint256[2] calldata unblindedSignatureS
     ) external {
-        bytes32 txHash    = redemptionMessageHash(recipient);
-        address nullifier = recoverSigner(txHash, spendSignature);
-        if (nullifier == address(0)) revert InvalidECDSA();
+        bytes32 txHash = redemptionMessageHash(recipient);
+        address recoveredNullifier = recoverSigner(txHash, spendSignature);
+        if (recoveredNullifier != nullifier) revert InvalidECDSA();
 
         if (spentNullifiers[nullifier]) revert AlreadySpent();
         spentNullifiers[nullifier] = true;
@@ -177,12 +211,13 @@ contract GhostVault {
 
         (bool sent,) = payable(recipient).call{value: DENOMINATION}("");
         if (!sent) revert EthSendFailed();
+        emit Redeemed(nullifier, recipient);
     }
 
     // -- Public view helpers ----------------------------------------------------
 
     function redemptionMessageHash(address recipient) public pure returns (bytes32) {
-        return keccak256(abi.encodePacked("Pay to: ", recipient));
+        return keccak256(abi.encodePacked("Pay to RAW: ", recipient));
     }
 
     /**

@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
 import {
-  ensureFuji,
+  ensureTargetChain,
+  targetChainMismatchUserMessage,
   getEthereum,
   parseEthAddressList,
 } from '../lib/ethereum'
@@ -11,7 +12,7 @@ type ShowToast = (msg: string, type?: ToastType) => void
 export type RedeemPhase = 'idle' | 'account' | 'sign'
 
 /**
- * Redeem: 1) Fuji + `wallet_requestPermissions` (wallet: pick/share account)
+ * Redeem: 1) Target chain + `wallet_requestPermissions` (wallet: pick/share account)
  *         2) `personal_sign` → success/error toast.
  */
 export function useRedeemSign(showToast: ShowToast) {
@@ -30,12 +31,9 @@ export function useRedeemSign(showToast: ShowToast) {
       setRedeemPhase('account')
 
       try {
-        const okChain = await ensureFuji(ethereum)
+        const okChain = await ensureTargetChain(ethereum)
         if (!okChain) {
-          showToast(
-            'Switch to Avalanche Fuji (43113) in your wallet to redeem',
-            'error'
-          )
+          showToast(targetChainMismatchUserMessage(), 'error')
           return
         }
 

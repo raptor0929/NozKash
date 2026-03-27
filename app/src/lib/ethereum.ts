@@ -1,4 +1,4 @@
-import { fujiRpcCall, PUBLIC_FUJI_HTTPS_RPC } from './fujiJsonRpc'
+import { chainRpcCall, getChainPublicRpcUrl } from './chainPublicRpc'
 
 export type EthereumProvider = {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>
@@ -16,22 +16,92 @@ export function parseEthAddressList(x: unknown): string[] {
   )
 }
 
-/** Avalanche Fuji Testnet (chainlist.org/chain/43113) */
-export const FUJI_CHAIN_ID = '0xa869'
+function normalizeHexChainId(raw: string | undefined): string {
+  const s = (raw ?? '').trim().toLowerCase()
+  if (!s) return '0xaa36a7'
+  return s.startsWith('0x') ? s : `0x${s}`
+}
 
-const FUJI_ADD_CHAIN_PARAMS = {
-  chainId: FUJI_CHAIN_ID,
-  chainName: 'Avalanche Fuji Testnet',
-  nativeCurrency: {
-    name: 'Avalanche',
-    symbol: 'AVAX',
-    decimals: 18,
-  },
-  rpcUrls: [PUBLIC_FUJI_HTTPS_RPC],
-  blockExplorerUrls: ['https://testnet.snowtrace.io'],
-} as const
+/**
+ * Wallet / app target chain (`eth_chainId`), lowercase hex.
+ * Set `VITE_CHAIN_ID` (e.g. `0xaa36a7` or `aa36a7`).
+ */
+export const TARGET_CHAIN_ID = normalizeHexChainId(
+  import.meta.env.VITE_CHAIN_ID as string | undefined
+)
 
-/** Converts `eth_getBalance` (hex wei) to a label with the native symbol (e.g. AVAX). */
+/** Decimal string for UI / errors (e.g. `11155111`). */
+export const TARGET_CHAIN_ID_DECIMAL = BigInt(TARGET_CHAIN_ID).toString()
+
+/**
+ * Short label when the wallet is on the target chain (activity subtitles, etc.).
+ * Prefer `VITE_CHAIN_DISPLAY_NAME`; falls back to `VITE_CHAIN_NAME`.
+ */
+export const TARGET_NETWORK_LABEL = (() => {
+  const a = (import.meta.env.VITE_CHAIN_DISPLAY_NAME as string | undefined)?.trim()
+  if (a) return a
+  const b = (import.meta.env.VITE_CHAIN_NAME as string | undefined)?.trim()
+  if (b) return b
+  return 'Network'
+})()
+
+/** Shown in `wallet_addEthereumChain` — set `VITE_CHAIN_NAME` (e.g. `Arbitrum One`). */
+const WALLET_CHAIN_NAME = (() => {
+  const n = (import.meta.env.VITE_CHAIN_NAME as string | undefined)?.trim()
+  return n || 'Ethereum'
+})()
+
+/** Native token symbol for balances / gas hints (set `VITE_NATIVE_CURRENCY_SYMBOL`). */
+export const NATIVE_CURRENCY_SYMBOL =
+  (import.meta.env.VITE_NATIVE_CURRENCY_SYMBOL as string | undefined)?.trim() ||
+  'ETH'
+
+const NATIVE_SYMBOL = NATIVE_CURRENCY_SYMBOL
+const NATIVE_NAME =
+  (import.meta.env.VITE_NATIVE_CURRENCY_NAME as string | undefined)?.trim() ||
+  'Ether'
+const NATIVE_DECIMALS_RAW =
+  import.meta.env.VITE_NATIVE_CURRENCY_DECIMALS as string | undefined
+const NATIVE_DECIMALS = (() => {
+  const n = Number.parseInt(NATIVE_DECIMALS_RAW ?? '18', 10)
+  return Number.isFinite(n) && n >= 0 ? n : 18
+})()
+
+function blockExplorerUrls(): string[] | undefined {
+  const u = (import.meta.env.VITE_BLOCK_EXPLORER_URL as string | undefined)?.trim()
+  if (!u) return undefined
+  return [u]
+}
+
+function walletAddEthereumChainParams() {
+  const explorer = blockExplorerUrls()
+  return {
+    chainId: TARGET_CHAIN_ID,
+    chainName: WALLET_CHAIN_NAME,
+    nativeCurrency: {
+      name: NATIVE_NAME,
+      symbol: NATIVE_SYMBOL,
+      decimals: NATIVE_DECIMALS,
+    },
+    rpcUrls: [getChainPublicRpcUrl()],
+    ...(explorer ? { blockExplorerUrls: explorer } : {}),
+  }
+}
+
+export const WRONG_NETWORK_LABEL = 'Wrong Network' as const
+
+export function targetChainMismatchUserMessage(): string {
+  return `Switch to ${TARGET_NETWORK_LABEL} (chain id ${TARGET_CHAIN_ID_DECIMAL}) in your wallet.`
+}
+
+/** UI line like `Ethereum · Arbitrum` when `VITE_WALLET_NETWORK_TAG` is set, else {@link TARGET_NETWORK_LABEL}. */
+export function walletNetworkBadgeLabel(): string {
+  const tag = (import.meta.env.VITE_WALLET_NETWORK_TAG as string | undefined)?.trim()
+  if (tag) return `${WALLET_CHAIN_NAME} · ${tag}`
+  return TARGET_NETWORK_LABEL
+}
+
+/** Converts `eth_getBalance` (hex wei) to a label with the native symbol (e.g. ETH). */
 export function weiHexToNativeLabel(
   weiHex: string,
   symbol: string,
@@ -48,24 +118,12 @@ export function normalizeChainId(chainId: unknown): string | null {
   return chainId.toLowerCase()
 }
 
-/**
- * Delay **between** each `eth_getTransactionReceipt` poll (ms). This is the “poll interval.”
- * Shorter = more RPC traffic, faster detection once the tx mines.
- */
 const RECEIPT_POLL_INTERVAL_MS = 10_000
-/**
- * How many times to **call** `eth_getTransactionReceipt` before throwing.
- * Worst-case wait if the receipt never appears: `(maxAttempts − 1) × RECEIPT_POLL_INTERVAL_MS`
- * (waits only happen *after* failed attempts; e.g. 11 attempts → 10 sleeps → ~30s at 3000ms).
- */
 const RECEIPT_POLL_MAX_ATTEMPTS = 11
 
 /**
- * Polls for a mined receipt. Prefer `options.ethereum` so the wallet’s RPC is used
- * (avoids stacking `eth_getTransactionReceipt` on the same Infura key as vault scans).
- * Falls back to {@link fujiRpcCall} when no provider is passed.
- *
- * Used only here: deposit modal (`DepositConfirmModal`) and redeem (`sendVaultRedeem.ts`).
+ * Polls for a mined receipt. Prefer `options.ethereum` so the wallet’s RPC is used.
+ * Falls back to {@link chainRpcCall} when no provider is passed.
  */
 export async function waitForTransactionReceipt(
   txHash: string,
@@ -79,7 +137,7 @@ export async function waitForTransactionReceipt(
       })
       return r as { status?: string } | null
     }
-    return fujiRpcCall<{ status?: string } | null>(
+    return chainRpcCall<{ status?: string } | null>(
       'eth_getTransactionReceipt',
       [txHash]
     )
@@ -98,7 +156,7 @@ export async function waitForTransactionReceipt(
 
 export async function estimateSimpleTransferGasNative(
   ethereum: EthereumProvider,
-  nativeSymbol = 'AVAX'
+  nativeSymbol = NATIVE_SYMBOL
 ): Promise<string> {
   try {
     const gasPriceHex = (await ethereum.request({
@@ -118,19 +176,21 @@ export async function estimateSimpleTransferGasNative(
 }
 
 /**
- * Ensures Avalanche Fuji (43113): `wallet_switchEthereumChain` or `wallet_addEthereumChain`.
+ * Ensures the wallet is on {@link TARGET_CHAIN_ID}: `wallet_switchEthereumChain` or `wallet_addEthereumChain`.
  */
-export async function ensureFuji(ethereum: EthereumProvider): Promise<boolean> {
+export async function ensureTargetChain(
+  ethereum: EthereumProvider
+): Promise<boolean> {
   const id = normalizeChainId(await ethereum.request({ method: 'eth_chainId' }))
-  if (id === FUJI_CHAIN_ID) return true
+  if (id === TARGET_CHAIN_ID) return true
   try {
     await ethereum.request({
       method: 'wallet_switchEthereumChain',
-      params: [{ chainId: FUJI_CHAIN_ID }],
+      params: [{ chainId: TARGET_CHAIN_ID }],
     })
     return (
       normalizeChainId(await ethereum.request({ method: 'eth_chainId' })) ===
-      FUJI_CHAIN_ID
+      TARGET_CHAIN_ID
     )
   } catch (e: unknown) {
     const code = (e as { code?: number }).code
@@ -138,14 +198,27 @@ export async function ensureFuji(ethereum: EthereumProvider): Promise<boolean> {
     try {
       await ethereum.request({
         method: 'wallet_addEthereumChain',
-        params: [FUJI_ADD_CHAIN_PARAMS],
+        params: [walletAddEthereumChainParams()],
       })
       return (
         normalizeChainId(await ethereum.request({ method: 'eth_chainId' })) ===
-        FUJI_CHAIN_ID
+        TARGET_CHAIN_ID
       )
     } catch {
       return false
     }
   }
+}
+
+/** @deprecated Use {@link TARGET_CHAIN_ID} */
+export const SEPOLIA_CHAIN_ID = TARGET_CHAIN_ID
+
+/** @deprecated Use {@link TARGET_CHAIN_ID} */
+export const FUJI_CHAIN_ID = TARGET_CHAIN_ID
+
+/** @deprecated Use {@link ensureTargetChain} */
+export async function ensureSepolia(
+  ethereum: EthereumProvider
+): Promise<boolean> {
+  return ensureTargetChain(ethereum)
 }

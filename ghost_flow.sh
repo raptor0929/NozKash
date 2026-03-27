@@ -335,7 +335,7 @@ if ! $SKIP_REDEEM; then
         if $DRY_RUN; then
             log_dry "Redemption payload generated. Run without --dry-run to submit."
         else
-            log_ok "Redemption complete. 0.01 ETH transferred to $RECIPIENT."
+            log_ok "Redemption complete. 0.001 ETH transferred to $RECIPIENT."
         fi
     fi
 fi

@@ -58,7 +58,7 @@ Client                     GhostVault (on-chain)          Mint Server
   │  B = r · Y                    │                            │
   │                               │                            │
   │── deposit(depositId, B) ─────▶│                            │
-  │   + 0.01 ETH                  │── DepositLocked(id, B) ──▶│
+  │   + 0.001 ETH                 │── DepositLocked(id, B) ──▶│
   │                               │                            │  S' = sk · B
   │                               │◀── announce(id, S') ──────│
   │                               │                            │
@@ -69,7 +69,7 @@ Client                     GhostVault (on-chain)          Mint Server
   │                               │  ecrecover → verify sig    │
   │                               │  nullifier → double-spend  │
   │                               │  ecPairing → BLS verify    │
-  │                               │── 0.01 ETH ──────────────▶ dest
+  │                               │── 0.001 ETH ─────────────▶ dest
 ```
 
 **Blinding:** The client computes `B = r · H(spendAddress)` where `r` is a secret scalar. The mint sees only `B` — it cannot recover the spend address or link it to any future redemption.
@@ -205,7 +205,7 @@ The GhostVault contract (`sol/src/GhostVault.sol`) handles the complete token li
 
 | Function | Description |
 |----------|-------------|
-| `deposit(address depositId, uint256[2] B)` | Lock 0.01 ETH with a blinded G1 point |
+| `deposit(address depositId, uint256[2] B)` | Lock 0.001 ETH with a blinded G1 point |
 | `announce(address depositId, uint256[2] S')` | Mint posts blind signature (authorized caller only) |
 | `redeem(address recipient, bytes sig, address nullifier, uint256[2] S)` | Verify BLS + ECDSA, transfer ETH |
 
@@ -227,7 +227,7 @@ Both Python and TypeScript clients implement identical functionality, share the 
 
 ```bash
 cd py
-uv run client.py deposit --index 0              # Lock 0.01 ETH
+uv run client.py deposit --index 0              # Lock 0.001 ETH
 uv run client.py scan                            # Recover signed tokens (incremental)
 uv run client.py redeem --index 0 --to 0xAddr    # Redeem to any address
 uv run client.py status                          # Token lifecycle overview
@@ -392,7 +392,7 @@ The app is a single-page wallet with four routes:
 
 **`GhostMasterSeedProvider`** — React context that manages the vault master seed. On wallet connect, it prompts a one-time `personal_sign` in MetaMask to derive the seed deterministically (`keccak256(signature)`) — the seed lives only in RAM and is cleared on disconnect. For development, `VITE_GHOST_MASTER_SEED_HEX` bypasses the signature.
 
-**`DepositConfirmModal`** — The deposit flow: amount selection (fixed 0.01 AVAX denomination), real-time gas estimation via Fuji RPC, calldata construction using `buildGhostVaultDepositCalldata()` (derives secrets → blinds → ABI-encodes `deposit(address,uint256[2])`), and `eth_sendTransaction` through MetaMask. Includes pre-flight checks: `DENOMINATION()` view call, `depositPending()` collision check, and `eth_call` simulation before broadcasting.
+**`DepositConfirmModal`** — The deposit flow: amount selection (fixed 0.001 ETH denomination), real-time gas estimation via the configured RPC, calldata construction using `buildGhostVaultDepositCalldata()` (derives secrets → blinds → ABI-encodes `deposit(address,uint256[2])`), and `eth_sendTransaction` through MetaMask. Includes pre-flight checks: `DENOMINATION()` view call, `depositPending()` collision check, and `eth_call` simulation before broadcasting.
 
 **`useWallet`** — Hook managing MetaMask connection, account switching (`wallet_requestPermissions`), chain enforcement (auto-switches to Fuji 43113), and balance polling.
 

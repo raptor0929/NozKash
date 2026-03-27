@@ -1,26 +1,29 @@
 /**
- * On-chain reads on Fuji without using the wallet’s RPC.
+ * HTTP JSON-RPC for on-chain reads without the wallet (vault scans, estimates).
  *
- * **CORS:** if the default Infura URL blocks the browser origin, set
- * `VITE_FUJI_RPC_URL` to an endpoint that allows your app (or use a provider
- * dashboard to allow `http://localhost:*`).
+ * URL: `VITE_PUBLIC_RPC_URL` / `VITE_ETHEREUM_RPC_URL`, or a bundled default
+ * (set the URL to the same chain as `VITE_CHAIN_ID` in `ethereum.ts`).
  *
- * **429 / public RPC:** All calls are serialized and spaced (`VITE_FUJI_RPC_MIN_GAP_MS`,
- * default 150ms). Set to `0` for a paid endpoint with high limits. Retries use
- * exponential backoff (min ~2.5s between attempts on HTTP 429). Default max attempts 4
- * (`VITE_FUJI_RPC_MAX_RETRIES`). Tune vault scan via `VITE_GHOST_VAULT_RPC_BURST` /
- * `VITE_GHOST_VAULT_RPC_PAUSE_MS`.
+ * **429 / public RPC:** Calls are serialized and spaced (`VITE_PUBLIC_RPC_MIN_GAP_MS`,
+ * default 150ms). Retries with backoff (`VITE_PUBLIC_RPC_MAX_RETRIES`, default 4).
+ * Legacy `VITE_FUJI_*` env names are still read as fallbacks for migration.
  */
 
-/** Fuji C-Chain HTTP JSON-RPC (Infura public key — override with `VITE_FUJI_RPC_URL`). */
-export const PUBLIC_FUJI_HTTPS_RPC =
-  'https://avalanche-fuji.infura.io/v3/7026bb4d4e424828bfb0824e61bde166'
+/** Fallback HTTPS JSON-RPC when no env URL is set (change per deployment). */
+export const DEFAULT_PUBLIC_CHAIN_RPC =
+  'https://ethereum-sepolia-rpc.publicnode.com'
 
-export function getFujiRpcUrl(): string {
-  const raw = import.meta.env.VITE_FUJI_RPC_URL as string | undefined
-  const u = raw?.trim()
-  if (u && u.length > 0) return u
-  return PUBLIC_FUJI_HTTPS_RPC
+function readRpcUrlEnv(): string | undefined {
+  const a = (import.meta.env.VITE_PUBLIC_RPC_URL as string | undefined)?.trim()
+  if (a) return a
+  const b = (import.meta.env.VITE_ETHEREUM_RPC_URL as string | undefined)?.trim()
+  if (b) return b
+  const legacy = (import.meta.env.VITE_FUJI_RPC_URL as string | undefined)?.trim()
+  return legacy || undefined
+}
+
+export function getChainPublicRpcUrl(): string {
+  return readRpcUrlEnv() ?? DEFAULT_PUBLIC_CHAIN_RPC
 }
 
 let nextId = 0
@@ -30,42 +33,41 @@ function sleep(ms: number): Promise<void> {
 }
 
 function parseMaxRetries(): number {
-  const raw = import.meta.env.VITE_FUJI_RPC_MAX_RETRIES as string | undefined
+  const raw =
+    (import.meta.env.VITE_PUBLIC_RPC_MAX_RETRIES as string | undefined) ??
+    (import.meta.env.VITE_FUJI_RPC_MAX_RETRIES as string | undefined)
   if (raw == null || String(raw).trim() === '') return 4
   const n = Number.parseInt(String(raw).replace(/_/g, ''), 10)
   return Number.isFinite(n) && n >= 1 ? Math.min(n, 12) : 4
 }
 
-/** Min ms between the end of one HTTP JSON-RPC request and the start of the next (global). */
 function parseMinGapMs(): number {
-  const raw = import.meta.env.VITE_FUJI_RPC_MIN_GAP_MS as string | undefined
+  const raw =
+    (import.meta.env.VITE_PUBLIC_RPC_MIN_GAP_MS as string | undefined) ??
+    (import.meta.env.VITE_FUJI_RPC_MIN_GAP_MS as string | undefined)
   if (raw == null || String(raw).trim() === '') return 150
   const n = Number.parseInt(String(raw).replace(/_/g, ''), 10)
   if (!Number.isFinite(n) || n < 0) return 150
   return Math.min(n, 5000)
 }
 
-/**
- * Serializes every `fujiRpcCall` and optionally inserts a quiet period between requests.
- * Prevents overlapping vault scans + log chunks from hammering free/public RPC tiers.
- */
-let fujiRpcTail: Promise<unknown> = Promise.resolve()
-let fujiRpcLastEndMs = 0
+let chainRpcTail: Promise<unknown> = Promise.resolve()
+let chainRpcLastEndMs = 0
 
-function scheduleFujiRpc<T>(run: () => Promise<T>): Promise<T> {
-  const p = fujiRpcTail.then(async () => {
+function scheduleChainRpc<T>(run: () => Promise<T>): Promise<T> {
+  const p = chainRpcTail.then(async () => {
     const gap = parseMinGapMs()
-    if (fujiRpcLastEndMs > 0 && gap > 0) {
-      const wait = Math.max(0, gap - (Date.now() - fujiRpcLastEndMs))
+    if (chainRpcLastEndMs > 0 && gap > 0) {
+      const wait = Math.max(0, gap - (Date.now() - chainRpcLastEndMs))
       if (wait > 0) await sleep(wait)
     }
     try {
       return await run()
     } finally {
-      fujiRpcLastEndMs = Date.now()
+      chainRpcLastEndMs = Date.now()
     }
   }) as Promise<T>
-  fujiRpcTail = p.then(
+  chainRpcTail = p.then(
     () => undefined,
     () => undefined
   )
@@ -91,7 +93,7 @@ function isJsonRpcRateLimitError(
   return /rate|limit|too many|throttl|429/i.test(m)
 }
 
-async function fujiRpcCallOnce<T>(
+async function chainRpcCallOnce<T>(
   url: string,
   method: string,
   params: unknown[]
@@ -113,8 +115,7 @@ async function fujiRpcCallOnce<T>(
         }),
       })
     } catch (e) {
-      lastError =
-        e instanceof Error ? e : new Error(String(e))
+      lastError = e instanceof Error ? e : new Error(String(e))
       if (attempt < maxAttempts - 1) {
         await sleep(backoffMs(attempt))
         continue
@@ -125,7 +126,7 @@ async function fujiRpcCallOnce<T>(
     if (res.status === 429 || res.status === 503) {
       const ra = res.headers.get('Retry-After')
       const sec = ra != null ? Number.parseInt(ra, 10) : NaN
-      lastError = new Error(`Fuji RPC HTTP ${res.status} (${url})`)
+      lastError = new Error(`Chain RPC HTTP ${res.status} (${url})`)
       if (attempt < maxAttempts - 1) {
         const backoff = backoffMs(
           attempt,
@@ -138,7 +139,7 @@ async function fujiRpcCallOnce<T>(
     }
 
     if (!res.ok) {
-      throw new Error(`Fuji RPC HTTP ${res.status} (${url})`)
+      throw new Error(`Chain RPC HTTP ${res.status} (${url})`)
     }
 
     let json: {
@@ -151,7 +152,7 @@ async function fujiRpcCallOnce<T>(
         error?: { message?: string; code?: number }
       }
     } catch {
-      throw new Error(`Fuji RPC invalid JSON (${url})`)
+      throw new Error(`Chain RPC invalid JSON (${url})`)
     }
 
     if (json.error) {
@@ -161,21 +162,20 @@ async function fujiRpcCallOnce<T>(
         continue
       }
       throw new Error(
-        e.message ??
-          `Fuji RPC error${e.code != null ? ` ${e.code}` : ''}`
+        e.message ?? `Chain RPC error${e.code != null ? ` ${e.code}` : ''}`
       )
     }
 
     return json.result as T
   }
 
-  throw lastError ?? new Error('Fuji RPC failed after retries')
+  throw lastError ?? new Error('Chain RPC failed after retries')
 }
 
-export async function fujiRpcCall<T>(
+export async function chainRpcCall<T>(
   method: string,
   params: unknown[] = []
 ): Promise<T> {
-  const url = getFujiRpcUrl()
-  return scheduleFujiRpc(() => fujiRpcCallOnce<T>(url, method, params))
+  const url = getChainPublicRpcUrl()
+  return scheduleChainRpc(() => chainRpcCallOnce<T>(url, method, params))
 }

@@ -1,22 +1,25 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useGhostMasterSeed } from '../../context/GhostMasterSeedProvider'
 import {
   requestWalletBalanceRefresh,
   useWallet,
 } from '../../hooks/useWallet'
 import {
-  ensureFuji,
+  ensureTargetChain,
   getEthereum,
+  NATIVE_CURRENCY_SYMBOL,
+  targetChainMismatchUserMessage,
+  TARGET_NETWORK_LABEL,
   waitForTransactionReceipt,
-  weiHexToNativeLabel,
+  walletNetworkBadgeLabel,
 } from '../../lib/ethereum'
 import { avaxDecimalStringToWeiHex } from '../../lib/avaxWei'
-import { fujiRpcCall } from '../../lib/fujiJsonRpc'
+import { chainRpcCall } from '../../lib/chainPublicRpc'
 import {
   GHOST_VAULT_ADDRESS,
   GHOST_VAULT_DEPOSIT_VALUE_WEI_HEX,
-  GHOST_VAULT_RPC_POLL_MS,
   getNextVaultTokenIndexForDeposit,
+  publishOptimisticPendingDeposit,
   requestVaultActivityRefresh,
 } from '../../lib/ghostVault'
 import {
@@ -27,12 +30,12 @@ import {
   parseGhostVaultDepositCalldataArgs,
 } from '../../crypto/ghostDeposit'
 
-/** Quick amounts; only `SUPPORTED_DEPOSIT_AVAX` is enabled until arbitrary amounts ship. */
+/** Quick amounts; only `SUPPORTED_DEPOSIT_ETH` is enabled until arbitrary amounts ship. */
 const DEPOSIT_PRESETS = ['0.001', '0.01', '0.1', '1'] as const
 
-const DEFAULT_AMOUNT = '0.01'
-const SUPPORTED_DEPOSIT_AVAX = '0.01'
-const SUPPORTED_DEPOSIT_WEI = 10n ** 16n // 0.01 * 10^18
+const DEFAULT_AMOUNT = '0.001'
+const SUPPORTED_DEPOSIT_ETH = '0.001'
+const SUPPORTED_DEPOSIT_WEI = 10n ** 15n // 0.001 * 10^18
 
 const NOT_SUPPORTED_YET_MSG = 'Not supported yet'
 
@@ -69,7 +72,7 @@ function finalizeAmountForTx(s: string): string | null {
   return t
 }
 
-/** Exact 0.01 AVAX in wei; any other value is blocked for now. */
+/** Exact 0.001 ETH in wei; any other value is blocked for now. */
 function isSupportedDepositAmount(finalized: string): boolean {
   try {
     return BigInt(avaxDecimalStringToWeiHex(finalized)) === SUPPORTED_DEPOSIT_WEI
@@ -84,71 +87,15 @@ function addrPickLabel(addr: string): string {
 
 export function DepositConfirmModal({ open, onClose, onToast }: Props) {
   const { network, account } = useWallet()
-  const { effectiveMasterSeed, seedRevision, requestUnlockViaSign } =
+  const { effectiveMasterSeed, requestUnlockViaSign } =
     useGhostMasterSeed()
-  const [gasLabel, setGasLabel] = useState('—')
+  const [gasLabel] = useState('—')
   const [pending, setPending] = useState(false)
   const [amountAvax, setAmountAvax] = useState<string>(DEFAULT_AMOUNT)
-
-  const seedRef = useRef(effectiveMasterSeed)
-  const accountRef = useRef(account)
-  seedRef.current = effectiveMasterSeed
-  accountRef.current = account
 
   useEffect(() => {
     if (open) setAmountAvax(DEFAULT_AMOUNT)
   }, [open])
-
-  useEffect(() => {
-    if (!open || network !== 'Fuji') {
-      setGasLabel('—')
-      return
-    }
-
-    let cancelled = false
-
-    async function refreshGasEstimate() {
-      const seed = seedRef.current
-      const from = accountRef.current
-      if (!from || !seed) {
-        if (!cancelled) setGasLabel('—')
-        return
-      }
-      try {
-        const nextIdx = await getNextVaultTokenIndexForDeposit(seed, {
-          contractAddress: GHOST_VAULT_ADDRESS,
-        })
-        const { data } = await buildGhostVaultDepositCalldata(seed, nextIdx)
-        const gasHex = await fujiRpcCall<string>('eth_estimateGas', [
-          {
-            from,
-            to: GHOST_VAULT_ADDRESS,
-            data,
-            value: GHOST_VAULT_DEPOSIT_VALUE_WEI_HEX,
-          },
-        ])
-        const priceHex = await fujiRpcCall<string>('eth_gasPrice', [])
-        const wei = BigInt(gasHex) * BigInt(priceHex)
-        const label = weiHexToNativeLabel(
-          `0x${wei.toString(16)}`,
-          'AVAX',
-          6
-        )
-        if (!cancelled) setGasLabel(`~${label}`)
-      } catch {
-        if (!cancelled) setGasLabel('—')
-      }
-    }
-
-    const intervalId = window.setInterval(() => {
-      void refreshGasEstimate()
-    }, GHOST_VAULT_RPC_POLL_MS)
-
-    return () => {
-      cancelled = true
-      window.clearInterval(intervalId)
-    }
-  }, [open, network, seedRevision, !!effectiveMasterSeed])
 
   const close = () => {
     if (!pending) onClose()
@@ -182,12 +129,9 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
 
     setPending(true)
     try {
-      const okChain = await ensureFuji(ethereum)
+      const okChain = await ensureTargetChain(ethereum)
       if (!okChain) {
-        onToast(
-          'You need Avalanche Fuji Testnet (43113) to deposit',
-          'error'
-        )
+        onToast(targetChainMismatchUserMessage(), 'error')
         return
       }
 
@@ -220,7 +164,7 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
       }
 
       if (!data || data === '0x' || data.length < 10) {
-        console.error('[GhostVault deposit] missing calldata — would be plain AVAX transfer', {
+        console.error('[GhostVault deposit] missing calldata — would be plain ETH transfer', {
           data,
         })
         onToast('Internal error: deposit calldata missing', 'error')
@@ -254,7 +198,7 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
       let onChainDenominationWeiHex: string | null = null
       let depositPendingView: boolean | null = null
       try {
-        onChainDenominationWeiHex = await fujiRpcCall<string>('eth_call', [
+        onChainDenominationWeiHex = await chainRpcCall<string>('eth_call', [
           { to: GHOST_VAULT_ADDRESS, data: evmSelector4('DENOMINATION()') },
           'latest',
         ])
@@ -262,7 +206,7 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
         console.warn('[GhostVault deposit debug] DENOMINATION() eth_call failed', denErr)
       }
       try {
-        const pendHex = await fujiRpcCall<string>('eth_call', [
+        const pendHex = await chainRpcCall<string>('eth_call', [
           {
             to: GHOST_VAULT_ADDRESS,
             data: encodeDepositPendingCalldata(builtDepositId),
@@ -302,7 +246,7 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
       })
 
       try {
-        await fujiRpcCall<string>('eth_call', [sendParams, 'latest'])
+        await chainRpcCall<string>('eth_call', [sendParams, 'latest'])
         console.log(
           '[GhostVault deposit debug] eth_call (same as tx): ok — no revert on this RPC'
         )
@@ -323,11 +267,16 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
         onToast('Transaction failed or was reverted', 'error')
         return
       }
+      publishOptimisticPendingDeposit({
+        tokenIndex,
+        txHash: hash,
+        networkLabel: TARGET_NETWORK_LABEL,
+      })
       requestVaultActivityRefresh()
       requestWalletBalanceRefresh()
       onClose()
       onToast(
-        `Deposit confirmed · token #${tokenIndex} · ${finalized} AVAX`,
+        `Deposit confirmed · token #${tokenIndex} · ${finalized} ${NATIVE_CURRENCY_SYMBOL}`,
         'success'
       )
     } catch (err: unknown) {
@@ -351,7 +300,9 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
   if (!open) return null
 
   const finalized = finalizeAmountForTx(amountAvax)
-  const amountLabel = finalized ? `${finalized} AVAX` : '—'
+  const amountLabel = finalized
+    ? `${finalized} ${NATIVE_CURRENCY_SYMBOL}`
+    : '—'
 
   return (
     <div
@@ -415,8 +366,8 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
             autoComplete="off"
             spellCheck={false}
             className="amount-display-input"
-            aria-label="Amount in AVAX"
-            placeholder="0.01"
+            aria-label={`Amount in ${NATIVE_CURRENCY_SYMBOL}`}
+            placeholder="0.001"
             disabled={pending}
             value={amountAvax}
             onChange={(e) => {
@@ -428,7 +379,7 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
               }
             }}
           />
-          <span className="amount-display-cur">AVAX</span>
+          <span className="amount-display-cur">{NATIVE_CURRENCY_SYMBOL}</span>
         </div>
 
         <div className="deposit-preset-row">
@@ -439,7 +390,7 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
               className={`preset-btn${amountAvax === p ? ' active' : ''}`}
               disabled={pending}
               onClick={() => {
-                if (p !== SUPPORTED_DEPOSIT_AVAX) {
+                if (p !== SUPPORTED_DEPOSIT_ETH) {
                   onToast(NOT_SUPPORTED_YET_MSG, 'error')
                   return
                 }
@@ -486,10 +437,14 @@ export function DepositConfirmModal({ open, onClose, onToast }: Props) {
               style={{
                 fontFamily: 'var(--mono)',
                 color:
-                  network === 'Fuji' ? 'var(--green)' : 'var(--yellow)',
+                  network === TARGET_NETWORK_LABEL
+                    ? 'var(--green)'
+                    : 'var(--yellow)',
               }}
             >
-              {network === 'Fuji' ? 'Avalanche · Fuji' : network}
+              {network === TARGET_NETWORK_LABEL
+                ? walletNetworkBadgeLabel()
+                : network}
             </span>
           </div>
           <div className="info-row">

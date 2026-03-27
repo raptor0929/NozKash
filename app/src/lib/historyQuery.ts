@@ -10,6 +10,8 @@ export function activityKindToFilter(
       return 'redeem'
     case 'Pending':
       return 'pending'
+    case 'Refunded':
+      return 'refunded'
   }
 }
 
@@ -35,6 +37,7 @@ export function filterVaultActivity(
 export function formatTxAmountDisplay(item: VaultTx): string {
   if (item.type === 'Deposit') return `+${item.amount}`
   if (item.type === 'Redeem') return `-${item.amount}`
+  if (item.type === 'Refunded') return `+${item.amount}`
   return item.amount
 }
 
@@ -56,4 +59,5 @@ export const ACTIVITY_TYPE_FILTERS: {
   { key: 'deposit', label: 'Deposits' },
   { key: 'redeem', label: 'Redeems' },
   { key: 'pending', label: 'Pending' },
+  { key: 'refunded', label: 'Refunds' },
 ]

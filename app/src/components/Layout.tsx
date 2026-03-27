@@ -39,7 +39,6 @@ export function Layout() {
   const {
     connectWallet,
     disconnectWallet,
-    openWalletAccountPicker,
     account,
     accounts,
     network,
@@ -85,7 +84,7 @@ export function Layout() {
             method: 'eth_getBalance',
             params: [addr, 'latest'],
           })) as string
-          next[addr] = weiHexToNativeLabel(hex, 'AVAX', 4)
+          next[addr] = weiHexToNativeLabel(hex, 'ETH', 4)
         } catch {
           next[addr] = '—'
         }
@@ -344,43 +343,6 @@ export function Layout() {
             )}
           </div>
           <div className="wd-divider" />
-          <div
-            className="wd-action"
-            role="button"
-            tabIndex={0}
-            onClick={async () => {
-              setDropdownOpen(false)
-              const ok = await openWalletAccountPicker()
-              if (ok) {
-                showToast('Accounts updated from your wallet', 'success')
-              }
-            }}
-            onKeyDown={async (e) => {
-              if (e.key === 'Enter') {
-                setDropdownOpen(false)
-                const ok = await openWalletAccountPicker()
-                if (ok) {
-                  showToast('Accounts updated from your wallet', 'success')
-                }
-              }
-            }}
-          >
-            <div className="wd-action-icon">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-                <path
-                  d="M17 1l4 4-4 4M3 11V9a4 4 0 014-4h14M7 23l-4-4 4-4M21 13v2a4 4 0 01-4 4H3"
-                  stroke="var(--text2)"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </div>
-            <div className="wd-action-text-col">
-              <span className="wd-action-label">Change account</span>
-              <span className="wd-action-sub">Open your wallet · add or select</span>
-            </div>
-          </div>
           <div
             className="wd-action danger"
             role="button"

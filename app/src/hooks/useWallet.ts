@@ -1,13 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ensureFuji,
-  FUJI_CHAIN_ID,
+  ensureTargetChain,
   getEthereum,
+  NATIVE_CURRENCY_SYMBOL,
   parseEthAddressList,
+  targetChainMismatchUserMessage,
+  TARGET_CHAIN_ID,
+  TARGET_NETWORK_LABEL,
   weiHexToNativeLabel,
+  WRONG_NETWORK_LABEL,
 } from '../lib/ethereum'
 
-/** Interval for `eth_getBalance` while a wallet account is selected (keeps AVAX in sync after txs). */
+/** Interval for `eth_getBalance` while a wallet account is selected (keeps native ETH in sync after txs). */
 export const WALLET_BALANCE_POLL_MS = 6_000
 
 /** Dispatched after deposit/redeem so every `useWallet()` instance refetches (hooks are not shared). */
@@ -16,10 +20,6 @@ export const WALLET_BALANCE_REFRESH_EVENT = 'ghost:wallet-balance-refresh'
 export function requestWalletBalanceRefresh(): void {
   window.dispatchEvent(new Event(WALLET_BALANCE_REFRESH_EVENT))
 }
-
-type NetworkLabel = 'Fuji' | 'Wrong Network'
-
-const TARGET_CHAIN_ID = FUJI_CHAIN_ID
 
 type EthereumProvider = {
   request: (args: {
@@ -56,7 +56,7 @@ export function useWallet() {
   const [account, setAccount] = useState<string | null>(null)
   /** Hex with 0x prefix, lowercase; null until first provider read. */
   const [chainIdHex, setChainIdHex] = useState<string | null>(null)
-  const [network, setNetwork] = useState<NetworkLabel>('Wrong Network')
+  const [network, setNetwork] = useState<string>(WRONG_NETWORK_LABEL)
   const [balanceWeiHex, setBalanceWeiHex] = useState<string | null>(null)
   const accountsRef = useRef<string[]>([])
   accountsRef.current = accounts
@@ -114,18 +114,18 @@ export function useWallet() {
 
   const homeBalanceMain = useMemo(() => {
     if (!balanceWeiHex) return null
-    return weiHexToNativeLabel(balanceWeiHex, 'AVAX', 4)
+    return weiHexToNativeLabel(balanceWeiHex, NATIVE_CURRENCY_SYMBOL, 4)
   }, [balanceWeiHex])
 
   const homeBalanceUsd = useMemo(() => {
     if (!balanceWeiHex) return null
-    const avax = Number(BigInt(balanceWeiHex)) / 1e18
-    if (!Number.isFinite(avax)) return null
-    return `≈ $${(avax * 2417).toFixed(2)} USD`
+    const eth = Number(BigInt(balanceWeiHex)) / 1e18
+    if (!Number.isFinite(eth)) return null
+    return `≈ $${(eth * 2417).toFixed(2)} USD`
   }, [balanceWeiHex])
 
   const isConnected = useMemo(
-    () => account !== null && network === 'Fuji',
+    () => account !== null && network === TARGET_NETWORK_LABEL,
     [account, network]
   )
 
@@ -137,8 +137,8 @@ export function useWallet() {
       await ethereum.request({ method: 'eth_chainId' })
     )
     setChainIdHex(chainId)
-    if (chainId === TARGET_CHAIN_ID) setNetwork('Fuji')
-    else setNetwork('Wrong Network')
+    if (chainId === TARGET_CHAIN_ID) setNetwork(TARGET_NETWORK_LABEL)
+    else setNetwork(WRONG_NETWORK_LABEL)
   }, [])
 
   const selectAccount = useCallback((address: string) => {
@@ -167,7 +167,11 @@ export function useWallet() {
         setAccount(list.length > 0 ? list[0] : null)
         const normalized = normalizeChainId(chainId)
         setChainIdHex(normalized)
-        setNetwork(normalized === TARGET_CHAIN_ID ? 'Fuji' : 'Wrong Network')
+        setNetwork(
+          normalized === TARGET_CHAIN_ID
+            ? TARGET_NETWORK_LABEL
+            : WRONG_NETWORK_LABEL
+        )
       } catch (err) {
         if (isCancelled) return
         console.error('Wallet init failed', err)
@@ -182,7 +186,11 @@ export function useWallet() {
     const handleChainChanged = (newChainId: unknown) => {
       const normalized = normalizeChainId(newChainId)
       setChainIdHex(normalized)
-      setNetwork(normalized === TARGET_CHAIN_ID ? 'Fuji' : 'Wrong Network')
+      setNetwork(
+        normalized === TARGET_CHAIN_ID
+          ? TARGET_NETWORK_LABEL
+          : WRONG_NETWORK_LABEL
+      )
     }
 
     if (typeof ethereum?.on === 'function') {
@@ -219,10 +227,11 @@ export function useWallet() {
       )
 
       if (chainIdBefore !== TARGET_CHAIN_ID) {
-        await ethereum.request({
-          method: 'wallet_switchEthereumChain',
-          params: [{ chainId: TARGET_CHAIN_ID }],
-        })
+        const ok = await ensureTargetChain(ethereum)
+        if (!ok) {
+          await refreshNetwork()
+          return
+        }
       }
 
       await refreshNetwork()
@@ -249,7 +258,7 @@ export function useWallet() {
   }, [])
 
   /**
-   * Same flow as Add deposit / Redeem: Fuji → `wallet_requestPermissions` (pick
+   * Same flow as Add deposit / Redeem: target chain → `wallet_requestPermissions` (pick
    * accounts in the wallet) → `eth_requestAccounts` → active account from `eth_accounts`.
    */
   const openWalletAccountPicker = useCallback(async (): Promise<boolean> => {
@@ -259,11 +268,9 @@ export function useWallet() {
       return false
     }
     try {
-      const okChain = await ensureFuji(ethereum)
+      const okChain = await ensureTargetChain(ethereum)
       if (!okChain) {
-        window.alert(
-          'Switch to Avalanche Fuji (43113) in your wallet to change account.'
-        )
+        window.alert(targetChainMismatchUserMessage())
         return false
       }
 

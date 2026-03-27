@@ -131,7 +131,7 @@ def is_mock() -> bool:
 
 # ── Formatting helpers ─────────────────────────────────────────────────────────
 
-DENOMINATION_WEI = 10_000_000_000_000_000  # 0.01 ETH
+DENOMINATION_WEI = 1_000_000_000_000_000  # 0.001 ETH
 
 
 def _short(val: str, head: int = 10, tail: int = 8) -> str:
@@ -450,7 +450,7 @@ def cmd_deposit(config: ClientConfig, token_index: int) -> None:
     # ── Mock / dry-run: skip chain interaction entirely ────────────────────
     if is_mock():
         section("Step 3 · Save Token (mock — no chain)", "🧪")
-        dry("deposit([B.x, B.y], depositId) with value=0.01 ETH")
+        dry("deposit([B.x, B.y], depositId) with value=0.001 ETH")
         dry(f"B.x       = {hex(b_x)}")
         dry(f"B.y       = {hex(b_y)}")
         dry(f"depositId = {secrets.deposit_id}")
@@ -485,10 +485,10 @@ def cmd_deposit(config: ClientConfig, token_index: int) -> None:
     kv("Balance",         f"{Web3.from_wei(balance, 'ether'):.6f} ETH")
     kv("Nonce",           str(nonce))
     kv("Gas price",       f"{Web3.from_wei(gas_price, 'gwei'):.2f} gwei")
-    kv("Deposit amount",  "0.01 ETH")
+    kv("Deposit amount",  "0.001 ETH")
 
     if not is_dry_run() and balance < DENOMINATION_WEI:
-        err("Insufficient balance: need at least 0.01 ETH")
+        err("Insufficient balance: need at least 0.001 ETH")
         raise typer.Exit(code=1)
 
     try:
@@ -514,7 +514,7 @@ def cmd_deposit(config: ClientConfig, token_index: int) -> None:
     section("Step 4 · Broadcast", "📡")
 
     if is_dry_run():
-        dry(f"deposit([B.x, B.y], depositId) with value=0.01 ETH")
+        dry(f"deposit([B.x, B.y], depositId) with value=0.001 ETH")
         dry(f"from={wallet}")
         dry(f"to={config.contract_address}")
         dry(f"B.x = {hex(b_x)}")
@@ -940,7 +940,7 @@ def cmd_redeem(
     info("  ✔  ecrecover → nullifier matches spend address")
     info("  ✔  spentNullifiers[nullifier] was false")
     info("  ✔  ecPairing: e(S, G2) == e(H(nullifier), PK_mint)")
-    info(f"  ✔  0.01 ETH transferred to {recipient_checksum}")
+    info(f"  ✔  0.001 ETH transferred to {recipient_checksum}")
 
     rec.redeem_tx = tx_hex
     rec.spent     = True

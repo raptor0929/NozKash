@@ -13,4 +13,8 @@ sepolia = "${SEPOLIA_RPC_URL}"
 # GhostVault.t.sol forks this in setUp (override URL in Solidity via FUJI_RPC_URL).
 avalanche-fuji = "https://api.avax-test.network/ext/bc/C/rpc"
 
+# `forge script ... --verify` on Sepolia. Export `ETHERSCAN_API_KEY` (e.g. from `sol/.env`).
+[etherscan]
+sepolia = { key = "${ETHERSCAN_API_KEY}", url = "https://api-sepolia.etherscan.io/api" }
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

@@ -117,6 +117,25 @@
   },
   {
     "type": "function",
+    "name": "depositors",
+    "inputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "hashNullifierPoint",
     "inputs": [
       {
@@ -234,6 +253,19 @@
   },
   {
     "type": "function",
+    "name": "refund",
+    "inputs": [
+      {
+        "name": "depositId",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "spentNullifiers",
     "inputs": [
       {
@@ -285,6 +317,44 @@
         "type": "uint256[2]",
         "indexed": false,
         "internalType": "uint256[2]"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Redeemed",
+    "inputs": [
+      {
+        "name": "nullifier",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "recipient",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Refunded",
+    "inputs": [
+      {
+        "name": "depositId",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "to",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
       }
     ],
     "anonymous": false
@@ -346,7 +416,17 @@
   },
   {
     "type": "error",
+    "name": "NotDepositor",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NotMintAuthority",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NothingToRefund",
     "inputs": []
   }
 ]

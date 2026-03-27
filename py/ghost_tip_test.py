@@ -192,7 +192,7 @@ def main() -> None:
         bls_ok = gl.verify_bls_pairing(S, blinded.Y, pk_mint)
         assert bls_ok, "BLS pairing failed!"
         print("    ✅ BLS Pairing Verified! Mathematical proof is flawless.")
-        print("\n🎉 TRANSACTION SUCCESS: 0.01 Sepolia ETH Transferred! 🎉")
+        print("\n🎉 TRANSACTION SUCCESS: 0.001 Sepolia ETH Transferred! 🎉")
 
 
 if __name__ == "__main__":

@@ -4,10 +4,11 @@ import {
   getDepositId,
   getSpendAddress,
 } from '../crypto/ghost-library'
-import { fujiRpcCall } from './fujiJsonRpc'
+import { TARGET_NETWORK_LABEL } from './ethereum'
+import { chainRpcCall } from './chainPublicRpc'
 import type { VaultTx } from '../types/activity'
 
-type FujiRpcFn = typeof fujiRpcCall
+type ChainRpcFn = typeof chainRpcCall
 
 /** `.env` values like `60_000` must not use `parseInt` alone — it parses as `60`. */
 function normalizeEnvIntString(raw: string | undefined): string {
@@ -41,6 +42,38 @@ function parseEnvPositiveIntClamp(
 ): number {
   const n = parseEnvPositiveIntMin(raw, fallback, min)
   return Math.min(max, n)
+}
+
+function parseEnvNonNegativeIntClamp(
+  raw: string | undefined,
+  fallback: number,
+  max: number
+): number {
+  const s = normalizeEnvIntString(raw)
+  if (s === '') return fallback
+  const n = Number.parseInt(s, 10)
+  if (!Number.isFinite(n) || n < 0) return fallback
+  return Math.min(max, n)
+}
+
+/**
+ * Accepts either:
+ * - hex quantity (`0x...`) or
+ * - decimal block number (`1234567`) and converts to hex quantity.
+ */
+function parseEnvBlockHex(
+  raw: string | undefined,
+  fallbackHex: `0x${string}`
+): `0x${string}` {
+  const s = normalizeEnvIntString(raw)
+  if (!s) return fallbackHex
+  if (/^0x[0-9a-fA-F]+$/.test(s)) return s.toLowerCase() as `0x${string}`
+  if (/^\d+$/.test(s)) return `0x${BigInt(s).toString(16)}` as `0x${string}`
+  console.warn('[GhostVault] Invalid VITE_GHOST_VAULT_SCAN_FROM_BLOCK_HEX; using fallback', {
+    value: raw,
+    fallbackHex,
+  })
+  return fallbackHex
 }
 
 const GHOST_VAULT_MAX_BATCHES_FALLBACK = 128
@@ -140,6 +173,14 @@ export function invalidateVaultActivityCache(): void {
 
 /** Dispatched after deposit/redeem so UIs refetch activity without waiting for the poll interval. */
 export const GHOST_VAULT_ACTIVITY_REFRESH_EVENT = 'ghost:vault-activity-refresh'
+/** Dispatched right after a confirmed deposit to show an optimistic pending row immediately. */
+export const GHOST_VAULT_OPTIMISTIC_PENDING_EVENT = 'ghost:vault-optimistic-pending'
+
+export type GhostVaultOptimisticPendingDetail = {
+  tokenIndex: number
+  txHash: string
+  networkLabel: string
+}
 
 let ghostVaultLiveActive = false
 
@@ -170,11 +211,22 @@ export function requestVaultActivityRefresh(): void {
   }, 350)
 }
 
+export function publishOptimisticPendingDeposit(
+  detail: GhostVaultOptimisticPendingDetail
+): void {
+  window.dispatchEvent(
+    new CustomEvent<GhostVaultOptimisticPendingDetail>(
+      GHOST_VAULT_OPTIMISTIC_PENDING_EVENT,
+      { detail }
+    )
+  )
+}
+
 /**
- * Serial queue: at most `burst` calls to `fujiRpcCall`, then wait `pauseMs`.
+ * Serial queue: at most `burst` calls to `chainRpcCall`, then wait `pauseMs`.
  * Avoids bursts that hit provider rate limits.
  */
-function createVaultScanRpcLimiter(burst: number, pauseMs: number): FujiRpcFn {
+function createVaultScanRpcLimiter(burst: number, pauseMs: number): ChainRpcFn {
   let used = 0
   let queue: Promise<unknown> = Promise.resolve()
 
@@ -185,7 +237,7 @@ function createVaultScanRpcLimiter(burst: number, pauseMs: number): FujiRpcFn {
         used = 0
       }
       used += 1
-      return fujiRpcCall<T>(method, params)
+      return chainRpcCall<T>(method, params)
     }
     const next = queue.then(run) as Promise<T>
     queue = next.then(
@@ -196,16 +248,21 @@ function createVaultScanRpcLimiter(burst: number, pauseMs: number): FujiRpcFn {
   }
 }
 
-/** Deployed GhostVault (Fuji) — override with `VITE_GHOST_VAULT_ADDRESS`. */
+/** Deployed GhostVault — override with `VITE_GHOST_VAULT_ADDRESS`. */
 export const GHOST_VAULT_ADDRESS =
   (import.meta.env.VITE_GHOST_VAULT_ADDRESS as string | undefined) ??
   '0x0cd5b34e58c579105A3c080Bb3170d032a544352'
 
 /**
  * Default vault deployment block (`GHOST_VAULT_ADDRESS`): no point querying
- * `eth_getLogs` earlier — extra RPC only. Update if you change contracts.
+ * `eth_getLogs` earlier — extra RPC only. Override with
+ * `VITE_GHOST_VAULT_SCAN_FROM_BLOCK_HEX` after redeploying.
  */
-export const GHOST_VAULT_SCAN_FROM_BLOCK_HEX = '0x329896c' // 53053804
+export const GHOST_VAULT_SCAN_FROM_BLOCK_HEX =
+  parseEnvBlockHex(
+    import.meta.env.VITE_GHOST_VAULT_SCAN_FROM_BLOCK_HEX as string | undefined,
+    '0x329896c'
+  )
 
 /**
  * Scan / allocate in windows of this many token indices (0–4, 5–9, …).
@@ -223,8 +280,13 @@ export const GHOST_VAULT_TOKEN_BATCH_SIZE = parseEnvPositiveIntClamp(
 /**
  * Lowest token index the UI will allocate for a **new** deposit (`lastUsed + 1`, but
  * never below this). Use 2 to leave indices 0–1 unused by the auto counter.
+ * Override: `VITE_GHOST_VAULT_MIN_NEW_DEPOSIT_TOKEN_INDEX`.
  */
-export const GHOST_VAULT_MIN_NEW_DEPOSIT_TOKEN_INDEX = 2
+export const GHOST_VAULT_MIN_NEW_DEPOSIT_TOKEN_INDEX = parseEnvNonNegativeIntClamp(
+  import.meta.env.VITE_GHOST_VAULT_MIN_NEW_DEPOSIT_TOKEN_INDEX,
+  2,
+  1_000_000
+)
 
 /**
  * Upper bound on batches for activity scan and {@link findLastUsedVaultTokenIndex} /
@@ -263,10 +325,10 @@ export function ghostVaultMaxScannedTokenIndex(
  */
 export const GHOST_VAULT_TRACKED_TOKEN_INDICES = [0, 1, 2, 3, 4] as const
 
-export const GHOST_VAULT_DEPOSIT_AMOUNT_LABEL = '0.01 AVAX' as const
+export const GHOST_VAULT_DEPOSIT_AMOUNT_LABEL = '0.001 ETH' as const
 
-/** `msg.value` for `GhostVault.deposit` — 0.01 native token (1e16 wei). */
-export const GHOST_VAULT_DEPOSIT_VALUE_WEI_HEX = '0x2386f26fc10000' as const
+/** `msg.value` for `GhostVault.deposit` — 0.001 native token (1e15 wei). */
+export const GHOST_VAULT_DEPOSIT_VALUE_WEI_HEX = '0x38d7ea4c68000' as const
 
 /**
  * Topic0 for `DepositLocked(address indexed depositId, uint256[2] B)`.
@@ -278,8 +340,16 @@ export const DEPOSIT_LOCKED_TOPIC =
 export const MINT_FULFILLED_TOPIC =
   '0x7416ef7e58ae7b94b7df89de0e6dc3e80de4ad46d77e62954dbe55de26829f79'
 
+/** `Refunded(address indexed depositId, address indexed to)` */
+export const REFUNDED_TOPIC =
+  '0x51ebc7481979ebbd2e5cf0be7bb298c0a8dfe2c94e2b37ec845b412b2b93df52'
+
 /** `spentNullifiers(address)` getter (`abi.json`). */
 const SPENT_NULLIFIERS_SELECTOR = '0x2b2ba6e8'
+/** `depositPending(address)` getter. */
+const DEPOSIT_PENDING_SELECTOR = '0xd7d82302'
+/** `depositFulfilled(address)` getter. */
+const DEPOSIT_FULFILLED_SELECTOR = '0x7cf15601'
 
 function normalizeAddress(a: string): string {
   const h = a.replace(/^0x/i, '').toLowerCase()
@@ -315,6 +385,10 @@ export function vaultDerivedAddressesForIndices(
 function topic1ToDepositId(topic1: string): string {
   const h = topic1.replace(/^0x/i, '')
   return normalizeAddress(`0x${h.slice(-40)}`)
+}
+
+function encodeAddress32(depositId: string): string {
+  return normalizeAddress(depositId).slice(2).padStart(64, '0')
 }
 
 type RpcLog = {
@@ -359,7 +433,7 @@ function parseLastAcceptedBlockFromRpcError(err: unknown): bigint | null {
 }
 
 async function ethGetLogsOnce(
-  rpc: FujiRpcFn,
+  rpc: ChainRpcFn,
   filter: EthGetLogsPartialFilter & { fromBlock: string; toBlock: string }
 ): Promise<RpcLog[]> {
   const logs = await rpc<RpcLog[] | null>('eth_getLogs', [filter])
@@ -368,10 +442,10 @@ async function ethGetLogsOnce(
 
 /**
  * Walks [fromBlock … toBlock] in windows of at most `maxSpan` blocks (inclusive).
- * Needed on public Fuji RPC (~2048) and free tiers of other providers (~10).
+ * Needed on public RPC (~2048) and free tiers of other providers (~10).
  */
 async function ethGetLogsChunked(
-  rpc: FujiRpcFn,
+  rpc: ChainRpcFn,
   partial: EthGetLogsPartialFilter,
   fromBlock: string,
   toBlock: 'latest' | string,
@@ -412,7 +486,7 @@ async function ethGetLogsChunked(
 }
 
 async function ethGetLogsAutoChunk(
-  rpc: FujiRpcFn,
+  rpc: ChainRpcFn,
   partial: EthGetLogsPartialFilter,
   fromBlock: string,
   toBlock: 'latest' | string
@@ -465,7 +539,7 @@ function batchTokenIndices(batchIndex: number): number[] {
 
 async function blockHexToDateIso(
   blockNumberHex: string | undefined,
-  rpc: FujiRpcFn = fujiRpcCall
+  rpc: ChainRpcFn = chainRpcCall
 ): Promise<string> {
   if (!blockNumberHex) return new Date().toISOString().slice(0, 10)
   try {
@@ -492,7 +566,7 @@ async function fetchLogsForDepositIds(
   topic0: string,
   depositIds: string[],
   fromBlock: string,
-  rpc: FujiRpcFn = fujiRpcCall
+  rpc: ChainRpcFn = chainRpcCall
 ): Promise<RpcLog[]> {
   const topic1List = depositIds.map(depositIdToTopic)
   const partialOr: EthGetLogsPartialFilter = {
@@ -563,7 +637,7 @@ export async function fetchMintFulfilledSPrime(
     MINT_FULFILLED_TOPIC,
     [id],
     fromBlock,
-    fujiRpcCall
+    chainRpcCall
   )
   const log = latestLogByDepositId(logs).get(id)
   const data = log?.data?.replace(/^0x/i, '') ?? ''
@@ -573,10 +647,135 @@ export async function fetchMintFulfilledSPrime(
   return { sx, sy }
 }
 
+/**
+ * Fast status probe for one token index (used by optimistic pending UX).
+ * Avoids full activity scans by querying only this token's derived `depositId`.
+ */
+export async function fetchVaultRowForTokenIndex(
+  masterSeed: Uint8Array,
+  tokenIndex: number,
+  options?: Pick<GhostVaultFetchOptions, 'contractAddress' | 'fromBlock' | 'networkLabel'>
+): Promise<VaultTx | null> {
+  const vault = normalizeAddress(
+    options?.contractAddress ?? GHOST_VAULT_ADDRESS
+  )
+  const fromBlock = options?.fromBlock ?? GHOST_VAULT_SCAN_FROM_BLOCK_HEX
+  const netLabel = options?.networkLabel ?? TARGET_NETWORK_LABEL
+  const secrets = deriveTokenSecrets(masterSeed, tokenIndex)
+  const depositId = normalizeAddress(getDepositId(secrets))
+  const spendAddress = getSpendAddress(secrets)
+  const blindShort = addrShort(depositId)
+  const spendShort = addrShort(spendAddress)
+
+  const [lockedRaw, fulfilledRaw, refundedRaw] = await Promise.all([
+    fetchLogsForDepositIds(vault, DEPOSIT_LOCKED_TOPIC, [depositId], fromBlock, chainRpcCall),
+    fetchLogsForDepositIds(vault, MINT_FULFILLED_TOPIC, [depositId], fromBlock, chainRpcCall),
+    fetchLogsForDepositIds(vault, REFUNDED_TOPIC, [depositId], fromBlock, chainRpcCall),
+  ])
+
+  const lockLog = latestLogByDepositId(lockedRaw).get(depositId)
+  const mintLog = latestLogByDepositId(fulfilledRaw).get(depositId)
+  const refundLog = latestLogByDepositId(refundedRaw).get(depositId)
+
+  if (!lockLog && !mintLog && !refundLog) return null
+
+  if (mintLog) {
+    const spent = await spentNullifierIsSet(vault, spendAddress, chainRpcCall)
+    const bn = parseHexBlock(mintLog.blockNumber)
+    const txh = mintLog.transactionHash ?? '—'
+    const dateIso = await blockHexToDateIso(mintLog.blockNumber, chainRpcCall)
+    if (spent) {
+      return {
+        id: `vault-redeemed-${tokenIndex}`,
+        type: 'Redeem',
+        amount: GHOST_VAULT_DEPOSIT_AMOUNT_LABEL,
+        counterparty: spendShort,
+        txHash: txh,
+        dateIso,
+        time: dateIso,
+        historyLabel: `Redeem · spent · token #${tokenIndex}`,
+        historySub: `spentNullifiers[${spendShort}] · block ${bn || '?'} · ${netLabel}`,
+        blockNumber: bn,
+        tokenIndex,
+      }
+    }
+    return {
+      id: `vault-deposit-${tokenIndex}`,
+      type: 'Deposit',
+      amount: GHOST_VAULT_DEPOSIT_AMOUNT_LABEL,
+      counterparty: spendShort,
+      txHash: txh,
+      dateIso,
+      time: dateIso,
+      historyLabel: `Deposit · mint fulfilled · token #${tokenIndex}`,
+      historySub: `MintFulfilled · ${txShort(txh)} · block ${bn || '?'} · ${netLabel}`,
+      blockNumber: bn,
+      tokenIndex,
+    }
+  }
+
+  if (lockLog && refundLog) {
+    const lBn = parseHexBlock(lockLog.blockNumber)
+    const rBn = parseHexBlock(refundLog.blockNumber)
+    if (rBn > lBn) {
+      const txh = refundLog.transactionHash ?? '—'
+      const dateIso = await blockHexToDateIso(refundLog.blockNumber, chainRpcCall)
+      return {
+        id: `vault-refunded-${tokenIndex}`,
+        type: 'Refunded',
+        amount: GHOST_VAULT_DEPOSIT_AMOUNT_LABEL,
+        counterparty: blindShort,
+        txHash: txh,
+        dateIso,
+        time: dateIso,
+        historyLabel: `Deposit · refunded · token #${tokenIndex}`,
+        historySub: `Refunded · ${txShort(txh)} · block ${rBn || '?'} · ${netLabel}`,
+        blockNumber: rBn,
+        tokenIndex,
+      }
+    }
+  } else if (refundLog) {
+    const rBn = parseHexBlock(refundLog.blockNumber)
+    const txh = refundLog.transactionHash ?? '—'
+    const dateIso = await blockHexToDateIso(refundLog.blockNumber, chainRpcCall)
+    return {
+      id: `vault-refunded-${tokenIndex}`,
+      type: 'Refunded',
+      amount: GHOST_VAULT_DEPOSIT_AMOUNT_LABEL,
+      counterparty: blindShort,
+      txHash: txh,
+      dateIso,
+      time: dateIso,
+      historyLabel: `Deposit · refunded · token #${tokenIndex}`,
+      historySub: `Refunded · ${txShort(txh)} · block ${rBn || '?'} · ${netLabel}`,
+      blockNumber: rBn,
+      tokenIndex,
+    }
+  }
+
+  if (!lockLog) return null
+  const lBn = parseHexBlock(lockLog.blockNumber)
+  const txh = lockLog.transactionHash ?? '—'
+  const dateIso = await blockHexToDateIso(lockLog.blockNumber, chainRpcCall)
+  return {
+    id: `vault-pending-${tokenIndex}`,
+    type: 'Pending',
+    amount: GHOST_VAULT_DEPOSIT_AMOUNT_LABEL,
+    counterparty: blindShort,
+    txHash: txh,
+    dateIso,
+    time: dateIso,
+    historyLabel: `Deposit · pending · token #${tokenIndex}`,
+    historySub: `DepositLocked · ${txShort(txh)} · block ${lBn || '?'} · ${netLabel}`,
+    blockNumber: lBn,
+    tokenIndex,
+  }
+}
+
 async function spentNullifierIsSet(
   vault: string,
   spendAddress: string,
-  rpc: FujiRpcFn = fujiRpcCall
+  rpc: ChainRpcFn = chainRpcCall
 ): Promise<boolean> {
   const addr = normalizeAddress(spendAddress).slice(2)
   const data = (SPENT_NULLIFIERS_SELECTOR + addr.padStart(64, '0')).toLowerCase()
@@ -592,15 +791,20 @@ async function spentNullifierIsSet(
   }
 }
 
-/** True if any derived `depositId` in this batch has `DepositLocked` or `MintFulfilled` on-chain. */
+/** True if any derived `depositId` in this batch has vault-relevant logs on-chain. */
 function batchHasAnyVaultActivity(
   depositIds: string[],
   lockedById: Map<string, RpcLog>,
-  fulfilledById: Map<string, RpcLog>
+  fulfilledById: Map<string, RpcLog>,
+  refundedById: Map<string, RpcLog>
 ): boolean {
   return depositIds.some((id) => {
     const n = normalizeAddress(id)
-    return lockedById.has(n) || fulfilledById.has(n)
+    return (
+      lockedById.has(n) ||
+      fulfilledById.has(n) ||
+      refundedById.has(n)
+    )
   })
 }
 
@@ -640,8 +844,9 @@ export type GhostVaultFetchOptions = {
  * - **Deposited (mint fulfilled):** `DepositLocked` + `MintFulfilled`, and `spentNullifiers` false.
  * - **Redeemed:** `spentNullifiers(spend.address)` true (only queried if `MintFulfilled` exists, to save RPC).
  *
- * Scans batches of 5 indices until **two consecutive** batches have **no** `DepositLocked` or
- * `MintFulfilled` (so a single empty batch still scans higher indices — avoids gaps at 0–4 hiding 5+).
+ * Scans batches of 5 indices until the **first** batch that has **no**
+ * `DepositLocked` / `MintFulfilled` / `Refunded`.
+ * This assumes token indices progress contiguously for a wallet (no intentional gaps).
  *
  * **RPC:** burst/pause queue; cache TTL + dedupe of identical concurrent requests.
  *
@@ -725,7 +930,7 @@ function mergeVaultRowsSorted(a: VaultTx[], b: VaultTx[]): VaultTx[] {
 
 async function finalizeDraftsToRows(
   drafts: VaultRowDraft[],
-  rpc: FujiRpcFn
+  rpc: ChainRpcFn
 ): Promise<VaultTx[]> {
   const blockDateCache = new Map<string, string>()
   const dateIsos: string[] = []
@@ -755,7 +960,7 @@ async function fetchVaultActivityForFirstTokensImpl(
   vault: string,
   fromBlock: string
 ): Promise<VaultTx[]> {
-  const netLabel = options?.networkLabel ?? 'Fuji'
+  const netLabel = options?.networkLabel ?? TARGET_NETWORK_LABEL
   const rpc = createVaultScanRpcLimiter(
     GHOST_VAULT_SCAN_RPC_BURST,
     GHOST_VAULT_SCAN_RPC_PAUSE_MS
@@ -770,12 +975,11 @@ async function fetchVaultActivityForFirstTokensImpl(
     pauseMs: GHOST_VAULT_SCAN_RPC_PAUSE_MS,
     batchSize: GHOST_VAULT_TOKEN_BATCH_SIZE,
     maxBatches,
-    note: 'stop after 2 consecutive batches with no DepositLocked / MintFulfilled',
+    note: 'stop after first empty batch (contiguous index assumption)',
   })
 
   let mergedRows: VaultTx[] = []
-  /** Stop only after 2 consecutive batches with no logs — one empty batch can be a gap (0–4 unused, 5+ used). */
-  let consecutiveEmptyBatches = 0
+  /** Stop at first empty batch under contiguous index assumption. */
 
   for (let b = 0; b < maxBatches; b++) {
     const indices = batchTokenIndices(b)
@@ -786,7 +990,7 @@ async function fetchVaultActivityForFirstTokensImpl(
     )
     const depositIds = secretsList.map((s) => getDepositId(s))
 
-    const [lockedRaw, fulfilledRaw] = await Promise.all([
+    const [lockedRaw, fulfilledRaw, refundedRaw] = await Promise.all([
       fetchLogsForDepositIds(
         vault,
         DEPOSIT_LOCKED_TOPIC,
@@ -801,10 +1005,18 @@ async function fetchVaultActivityForFirstTokensImpl(
         fromBlock,
         rpc
       ),
+      fetchLogsForDepositIds(
+        vault,
+        REFUNDED_TOPIC,
+        depositIds,
+        fromBlock,
+        rpc
+      ),
     ])
 
     const lockedById = latestLogByDepositId(lockedRaw)
     const fulfilledById = latestLogByDepositId(fulfilledRaw)
+    const refundedById = latestLogByDepositId(refundedRaw)
 
     const spentFlags: boolean[] = []
     for (let j = 0; j < indices.length; j++) {
@@ -829,10 +1041,14 @@ async function fetchVaultActivityForFirstTokensImpl(
     const fulfilledFlags = indices.map((_, j) =>
       fulfilledById.has(normalizeAddress(depositIds[j]!))
     )
+    const refundedFlags = indices.map((_, j) =>
+      refundedById.has(normalizeAddress(depositIds[j]!))
+    )
     ghostVaultActivityDebug(`batch ${b}`, {
       tokenIndices: indices,
       depositLocked: lockedFlags,
       mintFulfilled: fulfilledFlags,
+      refunded: refundedFlags,
       spentNullifier: spentFlags,
     })
 
@@ -892,6 +1108,48 @@ async function fetchVaultActivityForFirstTokensImpl(
       }
 
       const lLog = lockedById.get(depositId)
+      const rfLog = refundedById.get(depositId)
+      if (lLog && rfLog) {
+        const lBn = parseHexBlock(lLog.blockNumber)
+        const rBn = parseHexBlock(rfLog.blockNumber)
+        if (rBn > lBn) {
+          const txh = rfLog.transactionHash ?? '—'
+          batchDrafts.push({
+            blockHex: rfLog.blockNumber,
+            row: {
+              id: `vault-refunded-${tokenIndex}`,
+              type: 'Refunded',
+              amount: GHOST_VAULT_DEPOSIT_AMOUNT_LABEL,
+              counterparty: blindShort,
+              txHash: txh,
+              historyLabel: `Deposit · refunded · token #${tokenIndex}`,
+              historySub: `Refunded · ${txShort(txh)} · block ${rBn || '?'} · ${netLabel}`,
+              blockNumber: rBn,
+              tokenIndex,
+            },
+          })
+          continue
+        }
+      } else if (rfLog) {
+        const rBn = parseHexBlock(rfLog.blockNumber)
+        const txh = rfLog.transactionHash ?? '—'
+        batchDrafts.push({
+          blockHex: rfLog.blockNumber,
+          row: {
+            id: `vault-refunded-${tokenIndex}`,
+            type: 'Refunded',
+            amount: GHOST_VAULT_DEPOSIT_AMOUNT_LABEL,
+            counterparty: blindShort,
+            txHash: txh,
+            historyLabel: `Deposit · refunded · token #${tokenIndex}`,
+            historySub: `Refunded · ${txShort(txh)} · block ${rBn || '?'} · ${netLabel}`,
+            blockNumber: rBn,
+            tokenIndex,
+          },
+        })
+        continue
+      }
+
       if (lLog) {
         const bn = parseHexBlock(lLog.blockNumber)
         const txh = lLog.transactionHash ?? '—'
@@ -921,22 +1179,18 @@ async function fetchVaultActivityForFirstTokensImpl(
     const batchAny = batchHasAnyVaultActivity(
       depositIds,
       lockedById,
-      fulfilledById
+      fulfilledById,
+      refundedById
     )
 
     // Progressive loading: update UI after each batch, even if it yielded no new rows.
     options?.onBatchProgress?.(b, mergedRows, indices)
-    if (batchAny) {
-      consecutiveEmptyBatches = 0
-    } else {
-      consecutiveEmptyBatches += 1
-      if (consecutiveEmptyBatches >= 2) {
-        ghostVaultActivityDebug(
-          'scan stop: two consecutive batches with no DepositLocked / MintFulfilled',
-          { batchIndex: b, tokenIndices: indices }
-        )
-        break
-      }
+    if (!batchAny) {
+      ghostVaultActivityDebug(
+        'scan stop: first empty batch (no DepositLocked / MintFulfilled / Refunded)',
+        { batchIndex: b, tokenIndices: indices }
+      )
+      break
     }
 
     if (b === maxBatches - 1) {
@@ -1011,9 +1265,9 @@ export async function findLastUsedVaultTokenIndex(
 }
 
 /**
- * Next token index for a **new** deposit: `max(findLastUsedVaultTokenIndex + 1,
- * {@link GHOST_VAULT_MIN_NEW_DEPOSIT_TOKEN_INDEX})` (privacy pool–style progression;
- * does not reuse skipped lower indices).
+ * Next token index for a **new** deposit: lowest free index >=
+ * {@link GHOST_VAULT_MIN_NEW_DEPOSIT_TOKEN_INDEX}.
+ * Reuses gaps (e.g. if index 2 is used and 0/1 are free, picks 0 or 1 by min bound).
  */
 export async function getNextVaultTokenIndexForDeposit(
   masterSeed: Uint8Array,
@@ -1022,13 +1276,56 @@ export async function getNextVaultTokenIndexForDeposit(
     'contractAddress' | 'fromBlock' | 'maxBatches'
   >
 ): Promise<number> {
-  const last = await findLastUsedVaultTokenIndex(masterSeed, options)
-  return Math.max(last + 1, GHOST_VAULT_MIN_NEW_DEPOSIT_TOKEN_INDEX)
+  const vault = normalizeAddress(
+    options?.contractAddress ?? GHOST_VAULT_ADDRESS
+  )
+  const maxBatches =
+    options?.maxBatches != null && options.maxBatches > 0
+      ? Math.min(options.maxBatches, GHOST_VAULT_ACTIVITY_MAX_BATCHES)
+      : GHOST_VAULT_DEFAULT_MAX_BATCHES
+  const minIdx = GHOST_VAULT_MIN_NEW_DEPOSIT_TOKEN_INDEX
+  const maxIdx = ghostVaultMaxScannedTokenIndex(maxBatches)
+
+  ghostVaultActivityDebug('next token probe start', {
+    minIdx,
+    maxIdx,
+    maxBatches,
+    batchSize: GHOST_VAULT_TOKEN_BATCH_SIZE,
+    vault,
+  })
+
+  for (let tokenIndex = minIdx; tokenIndex <= maxIdx; tokenIndex++) {
+    const depositId = getDepositId(deriveTokenSecrets(masterSeed, tokenIndex))
+    const encoded = encodeAddress32(depositId)
+    const pendingHex = await chainRpcCall<string>('eth_call', [
+      { to: vault, data: `${DEPOSIT_PENDING_SELECTOR}${encoded}` },
+      'latest',
+    ])
+    const isPending = BigInt(pendingHex || '0x0') !== 0n
+    let isFulfilled = false
+    if (!isPending) {
+      const fulfilledHex = await chainRpcCall<string>('eth_call', [
+        { to: vault, data: `${DEPOSIT_FULFILLED_SELECTOR}${encoded}` },
+        'latest',
+      ])
+      isFulfilled = BigInt(fulfilledHex || '0x0') !== 0n
+    }
+    if (!isPending && !isFulfilled) {
+      ghostVaultActivityDebug('next token probe picked', {
+        tokenIndex,
+        depositId,
+      })
+      return tokenIndex
+    }
+  }
+
+  throw new Error(
+    `Could not find a free token index in [${minIdx}..${maxIdx}] (raise VITE_GHOST_VAULT_MAX_BATCHES).`
+  )
 }
 
 /**
- * @deprecated Use {@link getNextVaultTokenIndexForDeposit} (privacy-pool counter).
- * Previously returned the lowest index without `DepositLocked`; that backfilled gaps.
+ * @deprecated Use {@link getNextVaultTokenIndexForDeposit} (same gap-filling behavior).
  */
 export async function findFirstFreeVaultTokenIndex(
   masterSeed: Uint8Array,

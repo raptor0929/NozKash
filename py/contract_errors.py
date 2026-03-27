@@ -47,7 +47,7 @@ for entry in _abi:
 # ── Diagnostic hints per error name ───────────────────────────────────────────
 
 _HINTS: dict[str, str] = {
-    "InvalidValue":            "msg.value must be exactly 0.01 ETH (DENOMINATION)",
+    "InvalidValue":            "msg.value must be exactly 0.001 ETH (DENOMINATION)",
     "InvalidECDSA":            "ecrecover returned address(0) — spend signature is malformed or msg_hash doesn't match the contract's redemptionMessageHash()",
     "AlreadySpent":            "this nullifier (spend address) has already been redeemed",
     "InvalidBLS":              "the BLS pairing check failed on-chain — e(S, G2) != e(Y, PK_mint). Possible causes: wrong mint keypair, corrupted S from scan, or hash-to-curve mismatch between Python and Solidity",

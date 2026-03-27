@@ -1,6 +1,10 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useGhostMasterSeed } from '../context/GhostMasterSeedProvider'
+import {
+  TARGET_NETWORK_LABEL,
+  walletNetworkBadgeLabel,
+} from '../lib/ethereum'
 import { fetchVaultActivityForFirstTokens } from '../lib/ghostVault'
 import type { VaultTx } from '../types/activity'
 
@@ -31,7 +35,7 @@ export function Recovery() {
       void endIdx
       void phrase
       const rows = await fetchVaultActivityForFirstTokens(seed, {
-        networkLabel: 'Fuji',
+        networkLabel: TARGET_NETWORK_LABEL,
       })
       setScanRows(rows)
       setDone(true)
@@ -60,7 +64,7 @@ export function Recovery() {
           RECOVERY
         </div>
         <div className="modal-sub-label" style={{ marginBottom: 0 }}>
-          Avalanche · Fuji · GhostVault reads via RPC
+          {walletNetworkBadgeLabel()} · GhostVault reads via RPC
         </div>
       </div>
 

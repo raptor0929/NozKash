@@ -1,11 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { TARGET_NETWORK_LABEL } from '../lib/ethereum'
 import {
   fetchVaultActivityForFirstTokens,
+  fetchVaultRowForTokenIndex,
   GHOST_VAULT_ACTIVITY_REFRESH_EVENT,
+  GHOST_VAULT_DEPOSIT_AMOUNT_LABEL,
+  GHOST_VAULT_OPTIMISTIC_PENDING_EVENT,
   GHOST_VAULT_RPC_POLL_MS,
   setGhostVaultLiveActive,
+  type GhostVaultOptimisticPendingDetail,
 } from '../lib/ghostVault'
-import { startGhostVaultActivityLive, getFujiWsRpcUrl } from '../lib/ghostVaultLiveActivity'
+import { startGhostVaultActivityLive, getChainWsRpcUrl } from '../lib/ghostVaultLiveActivity'
 import type { VaultTx } from '../types/activity'
 
 export function useGhostVaultActivityLive(params: {
@@ -18,7 +23,7 @@ export function useGhostVaultActivityLive(params: {
    */
   maxBatches?: number
   /**
-   * For UI strings (e.g. "Fuji").
+   * For UI strings (typically equals `TARGET_NETWORK_LABEL` when on the target chain).
    */
   networkLabel: string
 }): { rows: VaultTx[]; loading: boolean; error: string | null; scanBatch: number | null } {
@@ -29,21 +34,37 @@ export function useGhostVaultActivityLive(params: {
   const [error, setError] = useState<string | null>(null)
   const [scanBatch, setScanBatch] = useState<number | null>(null)
 
-  const wsUrl = useMemo(() => getFujiWsRpcUrl(), [])
+  const wsUrl = useMemo(() => getChainWsRpcUrl(), [])
 
   const controllerRef = useRef<ReturnType<typeof startGhostVaultActivityLive> | null>(null)
   const lastSeedRevisionRef = useRef<number>(seedRevision)
+  const optimisticByTokenRef = useRef<Map<number, VaultTx>>(new Map())
+  const prioritizeOptimisticTickRef = useRef(true)
+
+  const mergeWithOptimistic = (base: VaultTx[]): VaultTx[] => {
+    if (optimisticByTokenRef.current.size === 0) return base
+    // Keep optimistic/probed rows sticky while progressive scan runs:
+    // partial snapshots may temporarily omit higher token indices.
+    const next = [...base]
+    for (const [tokenIndex, optimistic] of optimisticByTokenRef.current.entries()) {
+      const withoutSameToken = next.filter((r) => r.tokenIndex !== tokenIndex)
+      withoutSameToken.unshift(optimistic)
+      next.splice(0, next.length, ...withoutSameToken)
+    }
+    return next
+  }
 
   useEffect(() => {
     let cancelled = false
     controllerRef.current?.stop()
     controllerRef.current = null
 
+    optimisticByTokenRef.current.clear()
     setRows([])
     setError(null)
     setScanBatch(null)
 
-    if (network !== 'Fuji' || !masterSeed) {
+    if (network !== TARGET_NETWORK_LABEL || !masterSeed) {
       setLoading(false)
       setGhostVaultLiveActive(false)
       return () => {
@@ -62,7 +83,7 @@ export function useGhostVaultActivityLive(params: {
           networkLabel,
           onProgress: (r) => {
             if (cancelled) return
-            setRows(r)
+            setRows(mergeWithOptimistic(r))
           },
           onBatchProgress: (b) => {
             if (cancelled) return
@@ -72,7 +93,7 @@ export function useGhostVaultActivityLive(params: {
         })
         if (cancelled) return
 
-        setRows(rowsForUi)
+        setRows(mergeWithOptimistic(rowsForUi))
         setLoading(false)
         setScanBatch(null)
 
@@ -88,7 +109,7 @@ export function useGhostVaultActivityLive(params: {
           maxBatches,
           onRows: (next) => {
             if (cancelled) return
-            setRows(next)
+            setRows(mergeWithOptimistic(next))
           },
         })
         controllerRef.current = controller
@@ -105,17 +126,45 @@ export function useGhostVaultActivityLive(params: {
 
     const intervalId = window.setInterval(() => {
       if (cancelled) return
-      // When WS is active, we avoid overwriting WS state with a full HTTP snapshot.
-      // The live controller already does reconnect backfill when it needs HTTP.
+      const optimisticTokens = Array.from(optimisticByTokenRef.current.keys())
+      const shouldProbeOptimistic =
+        optimisticTokens.length > 0 && prioritizeOptimisticTickRef.current
+
+      if (shouldProbeOptimistic) {
+        // Prioritize current optimistic token so Pending -> Deposit/Refunded appears fast.
+        const tokenIndex = optimisticTokens[0]!
+        prioritizeOptimisticTickRef.current = false
+        void (async () => {
+          try {
+            const row = await fetchVaultRowForTokenIndex(seed, tokenIndex, {
+              networkLabel,
+            })
+            if (!row || cancelled) return
+            // Promote optimistic pending to the freshest known real state for this token
+            // and keep it sticky while ordered scan catches up.
+            optimisticByTokenRef.current.set(tokenIndex, row)
+            setRows((prev) => {
+              const next = prev.filter((r) => r.tokenIndex !== tokenIndex)
+              next.unshift(row)
+              return mergeWithOptimistic(next)
+            })
+          } catch {
+            // Best effort.
+          }
+        })()
+        return
+      }
+
+      prioritizeOptimisticTickRef.current = true
+      // Keep previous behavior when WS is active: avoid full snapshot overwrite.
       if (wsEnabled) return
-      // Health poll: if cache is valid, this is cheap (no heavy rescan).
       void (async () => {
         try {
           const snap = await fetchVaultActivityForFirstTokens(seed, {
             networkLabel,
             maxBatches,
           })
-          if (!cancelled) setRows(snap)
+          if (!cancelled) setRows(mergeWithOptimistic(snap))
         } catch {
           // Best effort: keep WS-driven state.
         }
@@ -130,18 +179,56 @@ export function useGhostVaultActivityLive(params: {
             networkLabel,
             maxBatches,
           })
-          if (!cancelled) setRows(snap)
+          if (!cancelled) setRows(mergeWithOptimistic(snap))
         } catch {
           // ignore
         }
       })()
     }
     window.addEventListener(GHOST_VAULT_ACTIVITY_REFRESH_EVENT, onRefresh)
+    const onOptimisticPending = (ev: Event) => {
+      const d = (ev as CustomEvent<GhostVaultOptimisticPendingDetail>).detail
+      if (!d || typeof d.tokenIndex !== 'number') return
+      if (network !== TARGET_NETWORK_LABEL) return
+      const today = new Date().toISOString().slice(0, 10)
+      setRows((prev) => {
+        const withoutSameToken = prev.filter(
+          (r) =>
+            !(
+              r.tokenIndex === d.tokenIndex &&
+              (r.type === 'Pending' || r.type === 'Deposit')
+            )
+        )
+        const optimistic: VaultTx = {
+          id: `vault-pending-optimistic-${d.tokenIndex}-${Date.now()}`,
+          type: 'Pending',
+          amount: GHOST_VAULT_DEPOSIT_AMOUNT_LABEL,
+          counterparty: '—',
+          txHash: d.txHash,
+          dateIso: today,
+          time: today,
+          historyLabel: `Deposit · pending · token #${d.tokenIndex}`,
+          historySub: `Submitted · awaiting mint fulfillment · ${d.networkLabel}`,
+          blockNumber: Number.MAX_SAFE_INTEGER,
+          tokenIndex: d.tokenIndex,
+        }
+        optimisticByTokenRef.current.set(d.tokenIndex, optimistic)
+        return [optimistic, ...withoutSameToken]
+      })
+    }
+    window.addEventListener(
+      GHOST_VAULT_OPTIMISTIC_PENDING_EVENT,
+      onOptimisticPending as EventListener
+    )
 
     return () => {
       cancelled = true
       window.clearInterval(intervalId)
       window.removeEventListener(GHOST_VAULT_ACTIVITY_REFRESH_EVENT, onRefresh)
+      window.removeEventListener(
+        GHOST_VAULT_OPTIMISTIC_PENDING_EVENT,
+        onOptimisticPending as EventListener
+      )
       controllerRef.current?.stop()
       controllerRef.current = null
       setGhostVaultLiveActive(false)

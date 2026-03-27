@@ -2,7 +2,7 @@
 
 A stateless, privacy-preserving eCash system for EVM chains, built on BLS blind signatures over the BN254 curve.
 
-Users deposit a fixed denomination (0.01 ETH), receive a cryptographically blind-signed token from an off-chain mint, and redeem it to any address — without the mint ever learning which deposit corresponds to which redemption.
+Users deposit a fixed denomination (0.001 ETH), receive a cryptographically blind-signed token from an off-chain mint, and redeem it to any address — without the mint ever learning which deposit corresponds to which redemption.
 
 This repository is a research and reference implementation containing a shared cryptographic library (Python + TypeScript with byte-for-byte parity), a mint server daemon, a CLI wallet, and a cross-language test suite.
 
@@ -18,7 +18,7 @@ Client                     GhostVault (on-chain)          Mint Server
   │  B = r · Y                    │                            │
   │                               │                            │
   │── deposit(B, blindAddr) ─────▶│                            │
-  │   + 0.01 ETH                  │── DepositLocked(id, B) ──▶│
+  │   + 0.001 ETH                 │── DepositLocked(id, B) ──▶│
   │                               │                            │  S' = sk · B
   │                               │◀── announce(id, S') ──────│
   │                               │                            │
@@ -28,7 +28,7 @@ Client                     GhostVault (on-chain)          Mint Server
   │── redeem(dest, sig, S) ──────▶│                            │
   │                               │  ecrecover → nullifier     │
   │                               │  ecPairing → BLS verify    │
-  │                               │── 0.01 ETH ──────────────▶ dest
+  │                               │── 0.001 ETH ─────────────▶ dest
 ```
 
 **Privacy:** The blinding factor `r` is known only to the client. The mint signs `B = r·Y` without ever seeing `Y` or the spend address. At redemption the contract learns the nullifier but cannot link it back to the original deposit.
@@ -375,7 +375,7 @@ assert verify_ecdsa_mev_protection(
 Each command prints every intermediate cryptographic value for debugging.
 
 ```bash
-uv run client.py deposit --index 0              # Lock 0.01 ETH + blinded point
+uv run client.py deposit --index 0              # Lock 0.001 ETH + blinded point
 uv run client.py scan --from-block 7500000       # Recover signed tokens
 uv run client.py redeem --index 0 --to 0xAddr    # Redeem to any address
 uv run client.py redeem --index 0 --to 0xAddr --relayer http://localhost:8000

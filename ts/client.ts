@@ -33,7 +33,7 @@ import * as gl from './ghost-library.js';
 // CONFIG
 // ==============================================================================
 
-const DENOMINATION = parseEther('0.01');
+const DENOMINATION = parseEther('0.001');
 const WALLET_STATE_FILE = resolve('.ghost_wallet.json');
 const ABI_PATH = resolve('sol/ghost_vault_abi.json');
 
@@ -230,10 +230,10 @@ async function cmdDeposit(config: Config, tokenIndex: number) {
     const balance = await publicClient.getBalance({ address: config.walletAddress });
     kv('Wallet address', config.walletAddress);
     kv('Balance', `${formatEther(balance)} ETH`);
-    kv('Deposit amount', '0.01 ETH');
+    kv('Deposit amount', '0.001 ETH');
 
     if (balance < DENOMINATION) {
-        err('Insufficient balance: need at least 0.01 ETH');
+        err('Insufficient balance: need at least 0.001 ETH');
         process.exit(1);
     }
 
@@ -529,7 +529,7 @@ async function cmdRedeem(config: Config, tokenIndex: number, recipient: string) 
         log('  ✔  ecrecover → nullifier matches spend address');
         log('  ✔  spentNullifiers[nullifier] was false');
         log('  ✔  ecPairing: e(S, G2) == e(H(nullifier), PK_mint)');
-        log(`  ✔  0.01 ETH transferred to ${recipientAddr}`);
+        log(`  ✔  0.001 ETH transferred to ${recipientAddr}`);
 
         rec.redeem_tx = hash;
         rec.spent = true;

@@ -8,7 +8,7 @@ Performs the exact same verification steps the Solidity contract would:
     2. Check nullifier has not been spent (mock: in-memory set)
     3. Y = hashToCurve(nullifier)
     4. ecPairing(S, G2, Y, PK_mint) → BLS verification
-    5. Transfer 0.01 ETH to recipient (mock: just records success)
+    5. Transfer 0.001 ETH to recipient (mock: just records success)
 
 Library usage:
     from redeem_mock import MockRedeemer
@@ -148,7 +148,7 @@ class MockRedeemer:
         Simulate GhostVault.redeem() — the full on-chain verification pipeline.
 
         Args:
-            recipient:              Destination address for the 0.01 ETH.
+            recipient:              Destination address for the 0.001 ETH.
             spend_signature_bytes:  65-byte ECDSA signature (r‖s‖v), v is 27 or 28.
             unblinded_s_x:          x coordinate of the unblinded BLS signature S.
             unblinded_s_y:          y coordinate of the unblinded BLS signature S.

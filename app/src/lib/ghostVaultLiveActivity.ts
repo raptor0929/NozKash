@@ -1,9 +1,10 @@
-import { fujiRpcCall, getFujiRpcUrl } from './fujiJsonRpc'
+import { chainRpcCall, getChainPublicRpcUrl } from './chainPublicRpc'
 import {
   DEPOSIT_LOCKED_TOPIC,
   GHOST_VAULT_ADDRESS,
   GHOST_VAULT_DEPOSIT_AMOUNT_LABEL,
   MINT_FULFILLED_TOPIC,
+  REFUNDED_TOPIC,
   ghostVaultMaxScannedTokenIndex,
   vaultDerivedAddressesForIndices,
   ghostVaultActivityDebug,
@@ -11,7 +12,7 @@ import {
 } from './ghostVault'
 import type { VaultTx } from '../types/activity'
 
-type VaultEventKind = 'DepositLocked' | 'MintFulfilled'
+type VaultEventKind = 'DepositLocked' | 'MintFulfilled' | 'Refunded'
 
 type DerivedToken = {
   tokenIndex: number
@@ -67,23 +68,32 @@ function sortVaultRowsCompare(a: VaultTx, b: VaultTx): number {
   return b.id.localeCompare(a.id)
 }
 
-export function getFujiWsRpcUrl(): string | null {
-  const raw = import.meta.env.VITE_FUJI_WS_RPC_URL as string | undefined
-  const u = raw?.trim()
-  if (u) return u
+/** WebSocket URL for `eth_subscribe` (optional). */
+export function getChainWsRpcUrl(): string | null {
+  const a = (import.meta.env.VITE_PUBLIC_WS_RPC_URL as string | undefined)?.trim()
+  if (a) return a
+  const b = (import.meta.env.VITE_ETHEREUM_WS_RPC_URL as string | undefined)?.trim()
+  if (b) return b
+  const legacy = (import.meta.env.VITE_FUJI_WS_RPC_URL as string | undefined)?.trim()
+  if (legacy) return legacy
 
-  const http = getFujiRpcUrl()
-  const m = http.match(/^https?:\/\/([^/]+)\/v3\/(.+)$/i)
+  const http = getChainPublicRpcUrl()
+  const m = http.match(/^https?:\/\/([^/]+)(\/.*)?$/i)
   if (!m) return null
   const host = m[1]!
-  const projectId = m[2]!
-  // Infura pattern: wss://<host>/ws/v3/<projectId>
-  return `wss://${host}/ws/v3/${projectId}`
+  const inf = http.match(/^https?:\/\/([^/]+)\/v3\/(.+)$/i)
+  if (inf) {
+    return `wss://${inf[1]}/ws/v3/${inf[2]}`
+  }
+  if (http.includes('publicnode.com')) {
+    return `wss://${host}`
+  }
+  return null
 }
 
 async function blockNumberHexToDateIso(blockHex: string): Promise<string> {
   try {
-    const block = await fujiRpcCall<{ timestamp?: string } | null>(
+    const block = await chainRpcCall<{ timestamp?: string } | null>(
       'eth_getBlockByNumber',
       [blockHex, false]
     )
@@ -99,7 +109,7 @@ async function blockNumberHexToDateIso(blockHex: string): Promise<string> {
 async function spentNullifierIsSet(vault: string, spendAddress: string) {
   const addr = normalizeAddress(spendAddress).slice(2)
   const data = (SPENT_NULLIFIERS_SELECTOR + addr.padStart(64, '0')).toLowerCase()
-  const result = await fujiRpcCall<string>('eth_call', [
+  const result = await chainRpcCall<string>('eth_call', [
     { to: vault, data },
     'latest',
   ])
@@ -114,11 +124,12 @@ async function spentNullifierIsSet(vault: string, spendAddress: string) {
 type DepositState = {
   depositLocked?: { blockHex: string; txHash?: string }
   mintFulfilled?: { blockHex: string; txHash?: string }
+  refunded?: { blockHex: string; txHash?: string }
   spent?: boolean
 }
 
 function buildRow(params: {
-  vaultTxType: 'Pending' | 'Deposit' | 'Redeem'
+  vaultTxType: 'Pending' | 'Deposit' | 'Redeem' | 'Refunded'
   tokenIndex: number
   depositId: string
   spendAddress: string
@@ -144,6 +155,26 @@ function buildRow(params: {
 
   const bn = blockNumber ?? 0
   const idBase = tokenIndex
+
+  if (vaultTxType === 'Refunded') {
+    const blindShort = addrShort(depositId)
+    const txh = txHash ?? '—'
+    return {
+      id: `vault-refunded-${idBase}`,
+      type: 'Refunded',
+      amount,
+      counterparty: blindShort,
+      txHash: txh,
+      dateIso,
+      time: dateIso,
+      historyLabel: `Deposit · refunded · token #${tokenIndex}`,
+      historySub: `Refunded · ${txShort(txh)} · block ${
+        bn || '?'
+      } · ${netLabel}`,
+      blockNumber: bn,
+      tokenIndex,
+    }
+  }
 
   if (vaultTxType === 'Pending') {
     const blindShort = addrShort(depositId)
@@ -218,7 +249,7 @@ export type GhostVaultLiveActivityController = {
 export function startGhostVaultActivityLive(params: {
   masterSeed: Uint8Array
   /**
-   * Network label used in UI strings (e.g. "Fuji").
+   * Network label used in UI strings (from the app’s configured target chain).
    * Only works reliably when you're on that same chain.
    */
   networkLabel: string
@@ -335,16 +366,28 @@ export function startGhostVaultActivityLive(params: {
     const amount = GHOST_VAULT_DEPOSIT_AMOUNT_LABEL
     const depot = st ?? {}
 
-    let rowType: 'Pending' | 'Deposit' | 'Redeem'
+    let rowType: 'Pending' | 'Deposit' | 'Redeem' | 'Refunded'
     let selectedBlockHex: string | undefined
     let txHash: string | undefined
     let blockNumber: number | undefined
+
+    const refundedBn = depot.refunded
+      ? parseHexBlock(depot.refunded.blockHex)
+      : -1
+    const lockedBn = depot.depositLocked
+      ? parseHexBlock(depot.depositLocked.blockHex)
+      : -1
 
     if (depot.mintFulfilled) {
       selectedBlockHex = depot.mintFulfilled.blockHex
       txHash = depot.mintFulfilled.txHash
       blockNumber = parseHexBlock(selectedBlockHex)
       rowType = depot.spent ? 'Redeem' : 'Deposit'
+    } else if (depot.refunded && refundedBn > lockedBn) {
+      selectedBlockHex = depot.refunded.blockHex
+      txHash = depot.refunded.txHash
+      blockNumber = refundedBn
+      rowType = 'Refunded'
     } else if (depot.depositLocked) {
       selectedBlockHex = depot.depositLocked.blockHex
       txHash = depot.depositLocked.txHash
@@ -451,18 +494,46 @@ export function startGhostVaultActivityLive(params: {
     await recomputeTokenRow(tokenIndex)
   }
 
+  async function handleRefundedLog(log: LogLike): Promise<void> {
+    const topics = log.topics ?? []
+    const topic1 = topics[1]
+    const bnHex = log.blockNumber
+    if (!topic1 || !bnHex) return
+
+    const depositId = parseTopic1ToDepositId(topic1)
+    const tokenIndex = depositIdToTokenIndex.get(depositId)
+    if (tokenIndex == null) return
+
+    const logId = parseLogId(log)
+    if (processedLogIds.has(logId)) return
+    processedLogIds.add(logId)
+
+    const bn = parseHexBlock(bnHex)
+    if (bn <= lastAppliedBlock) return
+    lastAppliedBlock = bn
+
+    const st = upsertDepositState(depositId)
+    st.refunded = {
+      blockHex: bnHex,
+      txHash: log.transactionHash,
+    }
+
+    await recomputeTokenRow(tokenIndex)
+  }
+
   // (v1) We backfill per topic0 using `eth_getLogs` chunking.
 
   async function backfillFrom(fromBn: number): Promise<void> {
     if (stopped) return
     if (fromBn < 0) fromBn = 0
-    const headHex = await fujiRpcCall<string>('eth_blockNumber', [])
+    const headHex = await chainRpcCall<string>('eth_blockNumber', [])
     const toBn = parseHexBlock(headHex)
     if (fromBn > toBn) return
 
     for (const [topic0, handler] of [
       [DEPOSIT_LOCKED_TOPIC, handleDepositLockedLog],
       [MINT_FULFILLED_TOPIC, handleMintFulfilledLog],
+      [REFUNDED_TOPIC, handleRefundedLog],
     ] as const) {
       for (
         let cur = fromBn;
@@ -474,7 +545,7 @@ export function startGhostVaultActivityLive(params: {
         const hexTo = `0x${end.toString(16)}`
         let logs: LogLike[] = []
         try {
-          logs = (await fujiRpcCall<LogLike[]>('eth_getLogs', [
+          logs = (await chainRpcCall<LogLike[]>('eth_getLogs', [
             { address: vault, topics: [topic0], fromBlock: hexFrom, toBlock: hexTo },
           ])) as LogLike[]
         } catch {
@@ -508,10 +579,12 @@ export function startGhostVaultActivityLive(params: {
     } else if (r.type === 'Redeem' && blockHex) {
       st.mintFulfilled = { blockHex, txHash: r.txHash }
       st.spent = true
+    } else if (r.type === 'Refunded' && blockHex) {
+      st.refunded = { blockHex, txHash: r.txHash }
     }
   }
 
-  const wsUrl = getFujiWsRpcUrl()
+  const wsUrl = getChainWsRpcUrl()
   if (!wsUrl) {
     // No WS configured (or provider doesn’t support WS URL derivation).
     ghostVaultActivityDebug(
@@ -550,6 +623,7 @@ export function startGhostVaultActivityLive(params: {
     let jsonId = 1
     const depositSubId = jsonId++
     const mintSubId = jsonId++
+    const refundSubId = jsonId++
 
     const depositSubFilter = {
       address: vault,
@@ -558,6 +632,10 @@ export function startGhostVaultActivityLive(params: {
     const mintSubFilter = {
       address: vault,
       topics: [MINT_FULFILLED_TOPIC],
+    }
+    const refundSubFilter = {
+      address: vault,
+      topics: [REFUNDED_TOPIC],
     }
 
     socket.onopen = () => {
@@ -584,6 +662,14 @@ export function startGhostVaultActivityLive(params: {
           params: ['logs', mintSubFilter],
         })
       )
+      void socket.send(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: refundSubId,
+          method: 'eth_subscribe',
+          params: ['logs', refundSubFilter],
+        })
+      )
     }
 
     socket.onmessage = (ev) => {
@@ -596,10 +682,12 @@ export function startGhostVaultActivityLive(params: {
           if (!res || !kind) return
           if (kind === 'DepositLocked') void handleDepositLockedLog(res)
           if (kind === 'MintFulfilled') void handleMintFulfilledLog(res)
+          if (kind === 'Refunded') void handleRefundedLog(res)
         } else if (msg?.result && typeof msg?.id === 'number') {
           const id = msg.id as number
           if (id === depositSubId) subs.set(msg.result, 'DepositLocked')
           if (id === mintSubId) subs.set(msg.result, 'MintFulfilled')
+          if (id === refundSubId) subs.set(msg.result, 'Refunded')
         }
       } catch {
         // Ignore malformed frames.
