@@ -29,7 +29,10 @@
 
 /* NAVBAR */
 .navbar{padding:10px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);gap:8px;min-height:58px}
-.navbar-right{display:flex;align-items:center;gap:8px}
+.navbar-left{display:flex;align-items:center;gap:10px;min-width:0;flex:1}
+.navbar-sepolia-faucet-link{font-size:10px;font-family:var(--mono);font-weight:500;color:var(--history-accent);text-decoration:none;white-space:nowrap;line-height:1.2;min-width:0;overflow:hidden;text-overflow:ellipsis;max-width:7.5rem}
+.navbar-sepolia-faucet-link:hover{text-decoration:underline;color:var(--history-accent)}
+.navbar-right{display:flex;align-items:center;gap:8px;flex-shrink:0}
 .navbar-logo{display:flex;align-items:center;flex-shrink:0;line-height:0}
 .navbar-logo svg{width:130px;height:42px}
 .navbar-logo .nzkm-logo-bg{fill:var(--bg)}

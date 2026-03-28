@@ -30,6 +30,17 @@ export const TARGET_CHAIN_ID = normalizeHexChainId(
   import.meta.env.VITE_CHAIN_ID as string | undefined
 )
 
+/** Ethereum Sepolia testnet (`eth_chainId` hex). */
+export const ETHEREUM_SEPOLIA_CHAIN_ID_HEX = '0xaa36a7' as const
+
+/** Google Cloud Web3 faucet for Sepolia ETH (opens in a new tab from the navbar). */
+export const SEPOLIA_ETH_FAUCET_GCP_URL =
+  'https://cloud.google.com/application/web3/faucet/ethereum/sepolia' as const
+
+export function isTargetEthereumSepolia(): boolean {
+  return TARGET_CHAIN_ID === ETHEREUM_SEPOLIA_CHAIN_ID_HEX
+}
+
 /** Decimal string for UI / errors (e.g. `11155111`). */
 export const TARGET_CHAIN_ID_DECIMAL = BigInt(TARGET_CHAIN_ID).toString()
 

@@ -7,7 +7,12 @@ import { SplashScreen } from './eghost/SplashScreen'
 import { usePrivacy } from '../context/usePrivacy'
 import { loadRedemptionDraft } from '../crypto/ghostRedeem'
 import { useWallet, WALLET_BALANCE_POLL_MS } from '../hooks/useWallet'
-import { getEthereum, weiHexToNativeLabel } from '../lib/ethereum'
+import {
+  getEthereum,
+  isTargetEthereumSepolia,
+  SEPOLIA_ETH_FAUCET_GCP_URL,
+  weiHexToNativeLabel,
+} from '../lib/ethereum'
 import {
   invalidateVaultActivityCache,
   requestVaultActivityRefresh,
@@ -181,7 +186,20 @@ export function Layout() {
         )}
 
         <div className="navbar">
-          <EgcNavbarLogo />
+          <div className="navbar-left">
+            <EgcNavbarLogo />
+            {isTargetEthereumSepolia() ? (
+              <a
+                className="navbar-sepolia-faucet-link"
+                href={SEPOLIA_ETH_FAUCET_GCP_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Get Sepolia ETH (opens Google Cloud faucet in a new tab)"
+              >
+                Sepolia ETH
+              </a>
+            ) : null}
+          </div>
           <div className="navbar-right">
             <button
               type="button"
