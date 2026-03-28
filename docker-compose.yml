@@ -1,0 +1,67 @@
+# GhostVault mint — one container per chain, same image (py/Dockerfile).
+#
+# First-time setup (Ethereum Sepolia):
+#   cp mint.ethereum.testnet.env.example mint.ethereum.testnet.env
+#   # edit mint.ethereum.testnet.env with your keys and RPC
+#
+# Run default (Ethereum Sepolia only):
+#   docker compose up -d --build
+#
+# Enable other testnets after adding the matching mint.<chain>.testnet.env file:
+#   docker compose --profile avalanche up -d --build
+#   docker compose --profile monad up -d --build
+#   docker compose --profile bnb up -d --build
+#   docker compose --profile base up -d --build
+#
+# Logs: docker compose logs -f mint-ethereum-testnet
+
+services:
+  mint-ethereum-testnet:
+    profiles: [ethereum]
+    build:
+      context: .
+      dockerfile: py/Dockerfile
+    env_file:
+      - mint.ethereum.testnet.env
+    container_name: mint-ethereum-testnet
+    restart: unless-stopped
+
+  mint-avalanche-testnet:
+    profiles: [avalanche]
+    build:
+      context: .
+      dockerfile: py/Dockerfile
+    env_file:
+      - mint.avalanche.testnet.env
+    container_name: mint-avalanche-testnet
+    restart: unless-stopped
+
+  mint-monad-testnet:
+    profiles: [monad]
+    build:
+      context: .
+      dockerfile: py/Dockerfile
+    env_file:
+      - mint.monad.testnet.env
+    container_name: mint-monad-testnet
+    restart: unless-stopped
+
+  mint-bnb-testnet:
+    profiles: [bnb]
+    build:
+      context: .
+      dockerfile: py/Dockerfile
+    env_file:
+      - mint.bnb.testnet.env
+    container_name: mint-bnb-testnet
+    restart: unless-stopped
+
+  mint-base-testnet:
+    profiles: [base]
+    build:
+      context: .
+      dockerfile: py/Dockerfile
+    env_file:
+      - mint.base.testnet.env
+    container_name: mint-base-testnet
+    restart: unless-stopped

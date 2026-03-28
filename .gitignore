@@ -2,6 +2,9 @@
 # Add .env to .gitignore — never commit secrets to version control.
 .env
 
+# Per-chain mint server secrets (docker compose); see mint.*.env.example
+mint.*.env
+
 # also exposes stuff, used by mock wallet client
 .ghost_wallet.json
 
