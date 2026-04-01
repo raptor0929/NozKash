@@ -26,6 +26,10 @@ Configuration (.env):
     CONTRACT_ADDRESS        Deployed GhostVault contract address       [chain mode only]
     RPC_HTTP_URL            HTTP RPC endpoint                          [chain mode only]
     SCAN_FROM_BLOCK         Block to start scanning from (default: 0)
+    WEB3_POA_MIDDLEWARE     Proof-of-authority RPC fix (optional):
+                            unset = auto for BNB Chain (56) / BNB testnet (97);
+                            1 = always inject; 0 = never inject.
+                            Needed on BSC-style chains where block extraData > 32 bytes.
 
 Usage:
     uv run client.py deposit --index 0 --mock             # offline deposit
@@ -60,6 +64,7 @@ from rich.theme import Theme
 from rich.traceback import install as install_rich_traceback
 from web3 import Web3
 from web3.exceptions import ContractCustomError, ContractLogicError
+from web3.middleware import ExtraDataToPOAMiddleware
 
 from contract_errors import decode_contract_error
 from ghost_library import (
@@ -402,11 +407,37 @@ def encode_spend_signature(compact_hex: str, recovery_bit: int) -> bytes:
     return r_bytes + s_bytes + v_byte
 
 
+# BNB Smart Chain mainnet / testnet use long block extraData; Web3.py rejects it without POA middleware.
+_KNOWN_POA_CHAIN_IDS: frozenset[int] = frozenset({56, 97})
+
+
+def _web3_should_use_poa_middleware(chain_id: int | None) -> bool:
+    """
+    POA / clique-style chains return extraData longer than 32 bytes; inject middleware or
+    eth_getBlock + fill_transaction_defaults raise ExtraDataLengthError.
+    """
+    raw = os.getenv("WEB3_POA_MIDDLEWARE", "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if chain_id is not None and chain_id in _KNOWN_POA_CHAIN_IDS:
+        return True
+    return False
+
+
 def build_web3(config: ClientConfig) -> Web3:
     w3 = Web3(Web3.HTTPProvider(config.rpc_http_url))
     if not w3.is_connected():
         err(f"Cannot connect to RPC: {config.rpc_http_url}")
         raise typer.Exit(code=1)
+    chain_id: int | None = None
+    try:
+        chain_id = int(w3.eth.chain_id)
+    except Exception:
+        pass
+    if _web3_should_use_poa_middleware(chain_id):
+        w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
     return w3
 
 
